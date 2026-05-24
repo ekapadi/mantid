@@ -32,11 +32,12 @@ public:
 
   bool connect(const Poco::Net::SocketAddress &address) override;
   void start(Types::Core::DateAndTime startTime = Types::Core::DateAndTime()) override;
-  std::shared_ptr<API::Workspace> extractData() override;
+  std::shared_ptr<API::Workspace> doExtractData() override;
 
   bool isConnected() override;
   bool dataReset() override;
-  ILiveListener::RunStatus runStatus() override;
+  RunStatus runState() const override;
+  API::ListenerState listenerState() const override;
   int runNumber() const override;
 
 private:

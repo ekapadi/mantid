@@ -105,7 +105,7 @@ void KafkaEventListener::start(Types::Core::DateAndTime startTime) {
 }
 
 /// @copydoc ILiveListener::extractData
-std::shared_ptr<API::Workspace> KafkaEventListener::extractData() {
+std::shared_ptr<API::Workspace> KafkaEventListener::doExtractData() {
   assert(m_decoder);
   // The first call to extract is very early in the start live data process
   // and we may not be completely ready yet, wait upto a maximum of 5 seconds
@@ -123,9 +123,13 @@ std::shared_ptr<API::Workspace> KafkaEventListener::extractData() {
 /// @copydoc ILiveListener::isConnected
 bool KafkaEventListener::isConnected() { return (m_decoder ? m_decoder->isCapturing() : false); }
 
-/// @copydoc ILiveListener::runStatus
-API::ILiveListener::RunStatus KafkaEventListener::runStatus() {
-  return m_decoder->hasReachedEndOfRun() ? EndRun : Running;
+/// @copydoc ILiveListener::runState
+API::ILiveListener::RunStatus KafkaEventListener::runState() const {
+  return (m_decoder && m_decoder->hasReachedEndOfRun()) ? EndRun : Running;
+}
+
+API::ListenerState KafkaEventListener::listenerState() const {
+  return (m_decoder && m_decoder->isCapturing()) ? API::ListenerState::Connected : API::ListenerState::Disconnected;
 }
 
 /// @copydoc ILiveListener::runNumber

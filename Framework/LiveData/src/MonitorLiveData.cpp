@@ -188,7 +188,8 @@ void MonitorLiveData::exec() {
       }
 
       // Did we just hit a run transition?
-      ILiveListener::RunStatus runStatus = listener->runStatus();
+      const auto lastEdge = listener->lastTransition();
+      const ILiveListener::RunStatus runStatus = lastEdge.value_or(listener->runState());
       if (runStatus == ILiveListener::EndRun) {
         // Need to keep track of what the run number *was* so we
         // can properly rename workspaces

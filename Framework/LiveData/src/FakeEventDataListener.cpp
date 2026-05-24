@@ -28,8 +28,8 @@ FakeEventDataListener::FakeEventDataListener()
   m_datarate = datarateConfigVal.value_or(200); // Default data rate. Low so that our lowest-powered
                                                 // buildserver can cope.
                                                 // For auto-ending and restarting runs
-  auto endRunEveryConfigVal = ConfigService::Instance().getValue<int>("fakeeventdatalistener.endrunevery");
-  m_endRunEvery = endRunEveryConfigVal.value_or(0);
+  auto endRunEveryConfigVal = ConfigService::Instance().getValue<double>("fakeeventdatalistener.endrunevery");
+  m_endRunEvery = endRunEveryConfigVal.value_or(0.0);
 
   auto notyettimesConfigVal = ConfigService::Instance().getValue<int>("fakeeventdatalistener.notyettimes");
   m_notyettimes = notyettimesConfigVal.value_or(0);
@@ -47,15 +47,24 @@ bool FakeEventDataListener::isConnected() {
   return true; // For the time being at least
 }
 
-ILiveListener::RunStatus FakeEventDataListener::runStatus() {
+ILiveListener::RunStatus FakeEventDataListener::runState() const { return m_runState; }
+
+API::ListenerState FakeEventDataListener::listenerState() const { return API::ListenerState::Connected; }
+
+std::optional<ILiveListener::RunStatus> FakeEventDataListener::lastTransition() const { return m_lastTransition; }
+
+void FakeEventDataListener::onBeforeExtract() {
+  // Clear edge from the previous cycle first.
+  m_lastTransition.reset();
   if (m_endRunEvery > 0 && DateAndTime::getCurrentTime() > m_nextEndRunTime) {
-    // End a run once every m_endRunEvery seconds
+    // Periodic end-of-run: advance the clock, bump the run number, record edge.
     m_nextEndRunTime = DateAndTime::getCurrentTime() + m_endRunEvery;
     m_runNumber++;
-    return EndRun;
-  } else
-    // Never end a run
-    return Running;
+    m_runState = EndRun;
+    m_lastTransition = EndRun;
+  } else {
+    m_runState = Running;
+  }
 }
 
 int FakeEventDataListener::runNumber() const { return m_runNumber; }
@@ -89,7 +98,7 @@ void FakeEventDataListener::start(Types::Core::DateAndTime /*startTime*/) // Ign
   m_nextEndRunTime = DateAndTime::getCurrentTime() + m_endRunEvery;
 }
 
-std::shared_ptr<Workspace> FakeEventDataListener::extractData() {
+std::shared_ptr<Workspace> FakeEventDataListener::doExtractData() {
   // This is here to test the LoadLiveData side of the 'NotYet' exception
   // Note the post-increment of the call count in the comparison
   if (m_numExtractDataCalls++ < m_notyettimes)
