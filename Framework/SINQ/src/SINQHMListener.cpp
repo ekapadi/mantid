@@ -36,7 +36,7 @@ using namespace Poco::XML;
 
 DECLARE_LISTENER(SINQHMListener)
 
-SINQHMListener::SINQHMListener() : LiveListener(), httpcon(), response(), oldStatus() {
+SINQHMListener::SINQHMListener() : LiveListener(), httpcon(), response(), m_cachedRunState(NoRun), oldStatus() {
   connected = false;
   dimDirty = true;
   rank = 0;
@@ -57,7 +57,13 @@ bool SINQHMListener::connect(const Poco::Net::SocketAddress &address) {
 
 bool SINQHMListener::isConnected() { return connected; }
 
-ILiveListener::RunStatus SINQHMListener::runStatus() {
+ILiveListener::RunStatus SINQHMListener::runState() const { return m_cachedRunState; }
+
+API::ListenerState SINQHMListener::listenerState() const {
+  return connected ? API::ListenerState::Connected : API::ListenerState::Disconnected;
+}
+
+void SINQHMListener::onBeforeExtract() {
   std::istream &istr = httpRequest("/admin/textstatus.egi");
   std::stringstream oss;
   Poco::StreamCopier::copyStream(istr, oss);
@@ -88,20 +94,20 @@ ILiveListener::RunStatus SINQHMListener::runStatus() {
       dimDirty = true;
     }
     oldStatus = Running;
-    return Running;
+    m_cachedRunState = Running;
   } else if (status == 0) {
     oldStatus = NoRun;
-    return NoRun;
+    m_cachedRunState = NoRun;
   } else {
     throw std::runtime_error("Invalid DAQ status code " + daq["DAQ"] + "detected");
   }
 }
 
-std::shared_ptr<Workspace> SINQHMListener::extractData() {
+std::shared_ptr<Workspace> SINQHMListener::doExtractData() {
   static const char *dimNames[] = {"x", "y", "z", "t"};
 
   if (dimDirty) {
-    runStatus(); // make sure that hmhost is initialized
+    // hmhost and dimDirty are already current — set by onBeforeExtract().
     loadDimensions();
   }
 

@@ -40,7 +40,6 @@ set(INC_FILES
 )
 
 set(TEST_FILES
-    # Needs fixing to not rely on network. SNSLiveEventDataListenerTest.h
     ADARAPacketTest.h
     FakeEventDataListenerTest.h
     FileEventDataListenerTest.h
@@ -48,6 +47,10 @@ set(TEST_FILES
     LiveDataAlgorithmTest.h
     LoadLiveDataTest.h
     MonitorLiveDataTest.h
+    SNSLiveEventDataListenerAlgorithmIntegrationTest.h
+    SNSLiveEventDataListenerNoNetworkTest.h
+    SNSLiveEventDataListenerTest.h
+    # (SNSLiveEventDataListenerLegacyTest.h is intentionally NOT registered — retained as historical reference.)
     StartLiveDataTest.h
 )
 

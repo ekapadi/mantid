@@ -98,7 +98,7 @@ public:
    *    will call extractData() again a short while later. Any other exception
    *    will stop the calling algorithm.
    */
-  std::shared_ptr<API::Workspace> extractData() override;
+  std::shared_ptr<API::Workspace> doExtractData() override;
 
   //----------------------------------------------------------------------
   // State flags
@@ -109,10 +109,10 @@ public:
    */
   bool isConnected() override;
 
-  /** Gets the current run status of the listened-to data stream
-   *  @return A value of the RunStatus enumeration indicating the present status
+  /** Returns the current DAS run state.
    */
-  ILiveListener::RunStatus runStatus() override;
+  RunStatus runState() const override;
+  API::ListenerState listenerState() const override;
 
   int runNumber() const override;
 

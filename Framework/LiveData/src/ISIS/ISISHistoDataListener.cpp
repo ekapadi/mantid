@@ -145,9 +145,13 @@ bool ISISHistoDataListener::isConnected() {
   return stat == 0;
 }
 
-ILiveListener::RunStatus ISISHistoDataListener::runStatus() {
+ILiveListener::RunStatus ISISHistoDataListener::runState() const {
   // In a run by default
   return Running;
+}
+
+API::ListenerState ISISHistoDataListener::listenerState() const {
+  return m_daeHandle ? API::ListenerState::Connected : API::ListenerState::Disconnected;
 }
 
 int ISISHistoDataListener::runNumber() const {
@@ -162,7 +166,7 @@ void ISISHistoDataListener::start(Types::Core::DateAndTime /*startTime*/) // Ign
  * Read the data from the DAE.
  * @return :: A workspace with the data.
  */
-std::shared_ptr<Workspace> ISISHistoDataListener::extractData() {
+std::shared_ptr<Workspace> ISISHistoDataListener::doExtractData() {
 
   if (m_timeRegime < 0) {
     m_timeRegime = getTimeRegimeToLoad();
