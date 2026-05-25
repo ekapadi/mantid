@@ -52,13 +52,25 @@ side effects, but now does so via the named hooks.
 ## Verification
 
 > **Build note:** Cxxtest test executables are `EXCLUDE_FROM_ALL`. Run
-> `ninja AllTests` (or at least `ninja SNSLiveEventDataListenerTest`)
-> before running the test binary so stale test objects are rebuilt
+> `ninja AllTests` before `ctest` so stale test objects are rebuilt
 > against any modified listener headers. See sub-spec 01 for rationale.
 
-- `ninja SNSLiveEventDataListenerTest` builds.
-- `./bin/SNSLiveEventDataListenerTest` passes.
-- `clang-tidy` clean.
+> **SNS network test:** Hook-invocation tests that require a live SMS server
+> (`test_onBeginRun_invoked_when_runStatus_returns_BeginRun`, etc.) belong in
+> `SNSLiveEventDataListenerTest.h`, which is excluded from ctest. The
+> invariant test and toggle test live in
+> `SNSLiveEventDataListenerNoNetworkTest`, which runs under ctest.
+
+```bash
+# From the build directory (with pixi environment active):
+ninja AllTests
+ctest -R "LiveData"
+```
+
+- `ninja AllTests` builds cleanly.
+- `ctest -R "LiveData"` all pass; includes
+  `LiveDataTest_SNSLiveEventDataListenerNoNetworkTest` with 3 tests.
+- `clang-tidy` clean on the two modified source files.
 
 ## Done when
 

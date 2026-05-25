@@ -1139,13 +1139,13 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::AnnotationPkt &pkt) {
     case ADARA::MarkerType::PAUSE:
       m_eventBuffer->mutableRun().getTimeSeriesProperty<int>(PAUSE_PROPERTY)->addValue(timeFromPacket(pkt), 1);
       g_log.information() << "Run paused\n";
-      m_isDasPaused = true;
+      onRunPause(true);
       break;
 
     case ADARA::MarkerType::RESUME:
       m_eventBuffer->mutableRun().getTimeSeriesProperty<int>(PAUSE_PROPERTY)->addValue(timeFromPacket(pkt), 0);
       g_log.information() << "Run resumed\n";
-      m_isDasPaused = false;
+      onRunPause(false);
       break;
 
     case ADARA::MarkerType::OVERALL_RUN_COMMENT:
@@ -1465,6 +1465,62 @@ std::shared_ptr<Workspace> SNSLiveEventDataListener::doExtractData() {
   return temp;
 }
 
+// ---------------------------------------------------------------------------
+// Run-state transition hooks
+// ---------------------------------------------------------------------------
+// All three hooks are called while m_mutex is held by the caller.
+// They do not re-acquire the mutex.  (The lock will move into the hooks
+// themselves in sub-spec 07, when the call site moves to onBeforeExtract().)
+
+void SNSLiveEventDataListener::onBeginRun() {
+  // Reset workspace initialisation so that new geometry and device-descriptor
+  // packets will be processed.
+  m_workspaceInitialized = false;
+
+  // Clear the caches that depend on instrument configuration.
+  // Note: m_dataStartTime is NOT cleared here; it was set by rxPacket(RunStatusPkt)
+  // for the NEW_RUN packet and already contains the correct value.
+  m_instrumentXML.clear();
+  m_instrumentName.clear();
+  m_nameMap.clear();
+
+  initWorkspacePart1();
+
+  if (!m_deferredRunDetailsPkt) {
+    // Invariant: rxPacket(NEW_RUN) must have stashed the RunStatusPkt before
+    // queuing a BeginRun transition.  Reaching here means the producer side has
+    // a bug.
+    throw std::runtime_error("SNSLiveEventDataListener::onBeginRun(): "
+                             "m_deferredRunDetailsPkt is null — invariant violation.");
+  }
+  setRunDetails(*m_deferredRunDetailsPkt);
+  m_deferredRunDetailsPkt.reset();
+
+  m_adaraRunStatus = Running;
+}
+
+void SNSLiveEventDataListener::onEndRun() {
+  m_workspaceInitialized = false;
+
+  m_instrumentXML.clear();
+  m_instrumentName.clear();
+  m_dataStartTime = Types::Core::DateAndTime(); // cleared on EndRun only
+  m_nameMap.clear();
+
+  initWorkspacePart1();
+
+  m_adaraRunStatus = NoRun;
+}
+
+void SNSLiveEventDataListener::onRunPause(bool paused) {
+  // Pause state is orthogonal to run state: m_adaraRunStatus remains Running
+  // while the DAS is paused.  m_isDasPaused is read by isPaused() and by
+  // rxPacket(BankedEventPkt) to gate event appending.
+  m_isDasPaused = paused;
+}
+
+// ---------------------------------------------------------------------------
+
 /// Check the status of the current run
 
 /// Called by the foreground thread to check the status of the current run
@@ -1490,45 +1546,14 @@ ILiveListener::RunStatus SNSLiveEventDataListener::runStatus() {
 
   // It's only appropriate to return EndRun once (ie: when we've just
   // returned the last events from the run).  After that, we need to
-  // change the status to NoRun.
-  // The same logic applies to BeginRun and Running
+  // change the status to NoRun.  The same logic applies to BeginRun.
   if (m_pendingTransition.has_value()) {
-    // At run transitions, replace the old workspace with a new one
-    // (This ensures that we're not using log data and/or geometry from
-    // a previous run that are no longer valid.  SMS is guaranteed to
-    // send us new device descriptor packets at the start of every run.)
-    m_workspaceInitialized = false;
-
-    // These next 3 are what we check for in readyForInitPart2()
-    m_instrumentXML.clear();
-    m_instrumentName.clear();
-    if (rv == EndRun) {
-      // Don't clear this for BeginRun because it was set up in the parser
-      // for the RunStatus packet that signaled the beginning of a new
-      // run and is thus already set to the correct value.
-      m_dataStartTime = Types::Core::DateAndTime();
-    }
-
-    // NOTE: It's probably not necessary to clear the instrument name
-    // and instrument XML (which is the geometry info) because these
-    // values don't ever change.  (Or at least, changing them requires
-    // changing the SMS config and restarting it and that would cause us
-    // to restart the live listener algorithm.)  That said, SMS is
-    // guaranteed to send this info out with every run transition, so
-    // we might as well ensure that we always use up-to-date data.
-
-    m_nameMap.clear();
-    initWorkspacePart1();
-
-    if (rv == BeginRun) {
-      // Set the run details using the packet we saved from the rxPacket()
-      // function
-      setRunDetails(*m_deferredRunDetailsPkt);
-      m_deferredRunDetailsPkt.reset(); // shared_ptr, so we don't use delete
-      m_adaraRunStatus = Running;
-    } else if (rv == EndRun) {
-      m_adaraRunStatus = NoRun;
-    }
+    // Dispatch to the named transition hook.  The hooks are called while
+    // m_mutex is held (this function already owns the lock).
+    if (rv == BeginRun)
+      onBeginRun();
+    else if (rv == EndRun)
+      onEndRun();
     m_lastTransition = rv;
     m_pendingTransition.reset();
   }
