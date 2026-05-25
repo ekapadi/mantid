@@ -45,10 +45,16 @@ overrides `runState()` and `lastTransition()` for the test only.
 
 ## Verification
 
-- `ninja Framework` — succeeds.
-- `ctest -R LiveListenerTest` — passes, including new cases.
-- `pre-commit run --files <changed>`.
-- `clang-tidy` clean on `ILiveListener.{h,cpp}`.
+- `ninja Framework` — succeeds (builds `Framework/API` and all downstream
+  modules; confirms every existing listener still compiles against the new
+  header).
+- `ctest -R LiveListenerTest` — passes, including the three new test cases:
+  - `test_base_runStatus_default_returns_runState_when_no_edge`
+  - `test_base_runStatus_default_returns_lastTransition_when_present`
+  - `test_base_defaults_are_const_correct`
+- `pre-commit run --files Framework/API/inc/MantidAPI/ILiveListener.h Framework/API/src/ILiveListener.cpp Framework/API/test/LiveListenerTest.h`
+- `clang-tidy` on `Framework/API/inc/MantidAPI/ILiveListener.h` and
+  `Framework/API/src/ILiveListener.cpp`.
 
 ## Done when
 

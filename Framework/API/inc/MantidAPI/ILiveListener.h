@@ -14,6 +14,7 @@
 #include "MantidKernel/DateAndTime.h"
 #include "MantidKernel/PropertyManager.h"
 #include <Poco/Net/SocketAddress.h>
+#include <optional>
 #include <string>
 
 namespace Mantid {
@@ -22,6 +23,16 @@ namespace API {
 // Forward declaration
 //----------------------------------------------------------------------
 class Workspace;
+
+/** Listener connection / health, independent of the DAS run state.
+ *  These values are orthogonal to RunStatus.
+ */
+enum class ListenerState {
+  Disconnected, ///< Not connected to the DAS
+  Connected,    ///< Connected and reading
+  ReadWait,     ///< Connected but paused at a run boundary (back-pressure)
+  Error         ///< Background thread reported an exception
+};
 
 /** ILiveListener is the interface implemented by classes which connect directly
    to
@@ -112,10 +123,47 @@ public:
    */
   enum RunStatus { NoRun = 0, BeginRun = 1, Running = 2, EndRun = 4 };
 
-  /** Gets the current run status of the listened-to data stream
-   *  @return A value of the RunStatus enumeration indicating the present status
+  // ----- Pure state queries (no side effects, all const) -----------------
+
+  /** Current DAS run state (NoRun / BeginRun / Running / EndRun), as last
+   *  reported by the background thread.  This is a pure getter — calling it
+   *  must not mutate any internal state.
+   *  Default implementation returns NoRun for listeners that have no concept
+   *  of run boundaries.  Override to reflect listener-specific state.
    */
-  virtual ILiveListener::RunStatus runStatus() = 0;
+  virtual RunStatus runState() const { return NoRun; }
+
+  /** Whether the current run has been paused by a DAS annotation.
+   *  Orthogonal to runState(): runState() returns Running whether or not
+   *  the run is paused.  Default returns false.
+   */
+  virtual bool isPaused() const { return false; }
+
+  /** Listener connection / health.  Default returns Connected unconditionally;
+   *  concrete listeners should override to reflect actual connection state.
+   *  NOTE: This default will be promoted to a pure virtual (= 0) in a future
+   *  release once all listeners have been updated.  Do not rely on the default
+   *  in new listener implementations.
+   */
+  virtual ListenerState listenerState() const { return ListenerState::Connected; }
+
+  /** The run-state transition (if any) that the most recent extractData() call
+   *  consumed.  Cleared only when extractData() commits a *new* transition.
+   *  Reports run-state edges (BeginRun / EndRun) only; pause/resume are not
+   *  reported here — use isPaused() for those.
+   *  Listeners that have no transition concept always return nullopt.
+   */
+  virtual std::optional<RunStatus> lastTransition() const { return std::nullopt; }
+
+  /** Gets the current run status of the listened-to data stream.
+   *  @return A value of the RunStatus enumeration indicating the present status
+   *  @deprecated Use runState() / lastTransition() and call extractData() to
+   *    commit pending transitions.  This method will be removed in a future
+   *    release.
+   */
+  [[deprecated("Use runState() / lastTransition() and call extractData() "
+               "to commit pending transitions.")]]
+  virtual RunStatus runStatus();
 
   /// Returns the run number of the current run
   virtual int runNumber() const = 0;

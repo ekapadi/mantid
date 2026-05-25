@@ -12,6 +12,7 @@
 #include <cxxtest/TestSuite.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <optional>
 
 namespace Poco::Net {
 // Poco does not define this include the Poco::Net so GMock can't find it.
@@ -20,6 +21,7 @@ inline std::ostream &operator<<(std::ostream &os, const Poco::Net::SocketAddress
 }
 } // namespace Poco::Net
 
+GNU_DIAG_OFF("deprecated-declarations")
 class MockLiveListener : public Mantid::API::LiveListener {
 public:
   MockLiveListener() : Mantid::API::LiveListener() {
@@ -33,9 +35,40 @@ public:
   MOCK_METHOD(void, start, (Mantid::Types::Core::DateAndTime), (override));
   MOCK_METHOD(std::shared_ptr<Mantid::API::Workspace>, extractData, (), (override));
   MOCK_METHOD(bool, isConnected, (), (override));
-  MOCK_METHOD(RunStatus, runStatus, (), (override));
+  MOCK_METHOD(Mantid::API::ILiveListener::RunStatus, runStatus, (), (override));
   MOCK_METHOD(int, runNumber, (), (const, override));
   MOCK_METHOD(void, setAlgorithm, (const Mantid::API::IAlgorithm &), (override));
+};
+GNU_DIAG_ON("deprecated-declarations")
+
+// ---------------------------------------------------------------------------
+// Minimal test subclass for the new pure-getter default tests.
+// Drives runState() and lastTransition() from controllable members.
+// ---------------------------------------------------------------------------
+class TestableListener : public Mantid::API::LiveListener {
+public:
+  // Controllable state
+  Mantid::API::ILiveListener::RunStatus m_runState{Mantid::API::ILiveListener::NoRun};
+  std::optional<Mantid::API::ILiveListener::RunStatus> m_lastTransition{std::nullopt};
+  bool m_isPaused{false};
+  Mantid::API::ListenerState m_listenerState{Mantid::API::ListenerState::Disconnected};
+
+  // Pure-getter overrides
+  RunStatus runState() const override { return m_runState; }
+  bool isPaused() const override { return m_isPaused; }
+  Mantid::API::ListenerState listenerState() const override { return m_listenerState; }
+  std::optional<RunStatus> lastTransition() const override { return m_lastTransition; }
+
+  // Required pure virtuals (not exercised in these tests)
+  std::string name() const override { return "TestableListener"; }
+  bool supportsHistory() const override { return false; }
+  bool buffersEvents() const override { return false; }
+  bool connect(const Poco::Net::SocketAddress &) override { return true; }
+  void start(Mantid::Types::Core::DateAndTime) override {}
+  std::shared_ptr<Mantid::API::Workspace> extractData() override { return nullptr; }
+  bool isConnected() override { return true; }
+  int runNumber() const override { return 0; }
+  void setAlgorithm(const Mantid::API::IAlgorithm &) override {}
 };
 
 class LiveListenerTest : public CxxTest::TestSuite {
@@ -49,5 +82,43 @@ public:
     TS_ASSERT(!l->dataReset())
     TS_ASSERT(!l->dataReset())
     delete l;
+  }
+
+  // --- New tests for sub-spec 01 base-interface additions ---
+
+  void test_base_runStatus_default_returns_runState_when_no_edge() {
+    // When lastTransition() is nullopt, runStatus() shim returns runState().
+    TestableListener listener;
+    listener.m_runState = Mantid::API::ILiveListener::Running;
+    listener.m_lastTransition = std::nullopt;
+
+    GNU_DIAG_OFF("deprecated-declarations")
+    const auto status = listener.runStatus();
+    GNU_DIAG_ON("deprecated-declarations")
+
+    TS_ASSERT_EQUALS(status, Mantid::API::ILiveListener::Running);
+  }
+
+  void test_base_runStatus_default_returns_lastTransition_when_present() {
+    // When lastTransition() has a value, runStatus() shim returns that edge.
+    TestableListener listener;
+    listener.m_runState = Mantid::API::ILiveListener::Running;
+    listener.m_lastTransition = Mantid::API::ILiveListener::BeginRun;
+
+    GNU_DIAG_OFF("deprecated-declarations")
+    const auto status = listener.runStatus();
+    GNU_DIAG_ON("deprecated-declarations")
+
+    TS_ASSERT_EQUALS(status, Mantid::API::ILiveListener::BeginRun);
+  }
+
+  void test_base_defaults_are_const_correct() {
+    // All new pure getters must be callable on a const reference.
+    const TestableListener listener;
+    // Verify default values via const ref — this is also a compile-time check.
+    TS_ASSERT_EQUALS(listener.runState(), Mantid::API::ILiveListener::NoRun);
+    TS_ASSERT_EQUALS(listener.isPaused(), false);
+    TS_ASSERT_EQUALS(listener.listenerState(), Mantid::API::ListenerState::Disconnected);
+    TS_ASSERT(!listener.lastTransition().has_value());
   }
 };
