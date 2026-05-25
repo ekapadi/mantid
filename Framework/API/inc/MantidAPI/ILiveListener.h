@@ -139,13 +139,11 @@ public:
    */
   virtual bool isPaused() const { return false; }
 
-  /** Listener connection / health.  Default returns Connected unconditionally;
-   *  concrete listeners should override to reflect actual connection state.
-   *  NOTE: This default will be promoted to a pure virtual (= 0) in a future
-   *  release once all listeners have been updated.  Do not rely on the default
-   *  in new listener implementations.
+  /** Listener connection / health.
+   *  Every concrete listener must override this to reflect actual connection
+   *  state.  Returns one of: Disconnected, ReadWait, Connected, Error.
    */
-  virtual ListenerState listenerState() const { return ListenerState::Connected; }
+  virtual ListenerState listenerState() const = 0;
 
   /** The run-state transition (if any) that the most recent extractData() call
    *  consumed.  Cleared only when extractData() commits a *new* transition.

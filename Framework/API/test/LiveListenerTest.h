@@ -136,6 +136,7 @@ public:
       bool connect(const Poco::Net::SocketAddress &) override { return true; }
       void start(Mantid::Types::Core::DateAndTime) override {}
       bool isConnected() override { return true; }
+      Mantid::API::ListenerState listenerState() const override { return Mantid::API::ListenerState::Connected; }
       int runNumber() const override { return 0; }
       void setAlgorithm(const Mantid::API::IAlgorithm &) override {}
 
@@ -164,6 +165,7 @@ public:
       bool connect(const Poco::Net::SocketAddress &) override { return true; }
       void start(Mantid::Types::Core::DateAndTime) override {}
       bool isConnected() override { return true; }
+      Mantid::API::ListenerState listenerState() const override { return Mantid::API::ListenerState::Connected; }
       int runNumber() const override { return 0; }
       void setAlgorithm(const Mantid::API::IAlgorithm &) override {}
 
@@ -194,6 +196,7 @@ public:
       bool connect(const Poco::Net::SocketAddress &) override { return true; }
       void start(Mantid::Types::Core::DateAndTime) override {}
       bool isConnected() override { return true; }
+      Mantid::API::ListenerState listenerState() const override { return Mantid::API::ListenerState::Connected; }
       int runNumber() const override { return 0; }
       void setAlgorithm(const Mantid::API::IAlgorithm &) override {}
 
