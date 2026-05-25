@@ -89,7 +89,7 @@ void FakeEventDataListener::start(Types::Core::DateAndTime /*startTime*/) // Ign
   m_nextEndRunTime = DateAndTime::getCurrentTime() + m_endRunEvery;
 }
 
-std::shared_ptr<Workspace> FakeEventDataListener::extractData() {
+std::shared_ptr<Workspace> FakeEventDataListener::doExtractData() {
   // This is here to test the LoadLiveData side of the 'NotYet' exception
   // Note the post-increment of the call count in the comparison
   if (m_numExtractDataCalls++ < m_notyettimes)

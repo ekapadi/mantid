@@ -109,7 +109,7 @@ void TestDataListener::createEmptyWorkspace() {
   m_buffer->setMonitorWorkspace(monitorWS);
 }
 
-std::shared_ptr<Workspace> TestDataListener::extractData() {
+std::shared_ptr<Workspace> TestDataListener::doExtractData() {
   m_dataReset = false;
   // Add a small number of uniformly distributed events to each event list.
   using namespace DataObjects;

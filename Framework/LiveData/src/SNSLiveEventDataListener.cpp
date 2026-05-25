@@ -1401,7 +1401,7 @@ void SNSLiveEventDataListener::appendEvent(const uint32_t pixelId, const double 
 /// the temporary workspace.  The temporary workspace is left empty and
 /// ready to receive more data.
 /// @return shared pointer to a workspace containing the accumulated data
-std::shared_ptr<Workspace> SNSLiveEventDataListener::extractData() {
+std::shared_ptr<Workspace> SNSLiveEventDataListener::doExtractData() {
   // Check to see if the background thread has thrown an exception.  If so,
   // re-throw it here.
   if (m_backgroundException) {

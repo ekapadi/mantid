@@ -13,6 +13,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <optional>
+#include <stdexcept>
+#include <vector>
 
 namespace Poco::Net {
 // Poco does not define this include the Poco::Net so GMock can't find it.
@@ -32,7 +34,7 @@ public:
   MOCK_METHOD(bool, buffersEvents, (), (const, override));
   MOCK_METHOD(bool, connect, (const Poco::Net::SocketAddress &), (override));
   MOCK_METHOD(void, start, (Mantid::Types::Core::DateAndTime), (override));
-  MOCK_METHOD(std::shared_ptr<Mantid::API::Workspace>, extractData, (), (override));
+  MOCK_METHOD(std::shared_ptr<Mantid::API::Workspace>, doExtractData, (), (override));
   MOCK_METHOD(bool, isConnected, (), (override));
   MOCK_METHOD(Mantid::API::ILiveListener::RunStatus, runState, (), (const, override));
   MOCK_METHOD(Mantid::API::ListenerState, listenerState, (), (const, override));
@@ -64,7 +66,7 @@ public:
   bool buffersEvents() const override { return false; }
   bool connect(const Poco::Net::SocketAddress &) override { return true; }
   void start(Mantid::Types::Core::DateAndTime) override {}
-  std::shared_ptr<Mantid::API::Workspace> extractData() override { return nullptr; }
+  std::shared_ptr<Mantid::API::Workspace> doExtractData() override { return nullptr; }
   bool isConnected() override { return true; }
   int runNumber() const override { return 0; }
   void setAlgorithm(const Mantid::API::IAlgorithm &) override {}
@@ -119,5 +121,92 @@ public:
     TS_ASSERT_EQUALS(listener.isPaused(), false);
     TS_ASSERT_EQUALS(listener.listenerState(), Mantid::API::ListenerState::Disconnected);
     TS_ASSERT(!listener.lastTransition().has_value());
+  }
+
+  // --- New tests for sub-spec 02b template-method extractData() ---
+
+  void test_extractData_calls_onBeforeExtract_then_doExtractData() {
+    // Records the call order in a shared counter.
+    class OrderedListener : public Mantid::API::LiveListener {
+    public:
+      std::vector<int> calls;
+      std::string name() const override { return "OrderedListener"; }
+      bool supportsHistory() const override { return false; }
+      bool buffersEvents() const override { return false; }
+      bool connect(const Poco::Net::SocketAddress &) override { return true; }
+      void start(Mantid::Types::Core::DateAndTime) override {}
+      bool isConnected() override { return true; }
+      int runNumber() const override { return 0; }
+      void setAlgorithm(const Mantid::API::IAlgorithm &) override {}
+
+    protected:
+      void onBeforeExtract() override { calls.push_back(1); }
+      std::shared_ptr<Mantid::API::Workspace> doExtractData() override {
+        calls.push_back(2);
+        return nullptr;
+      }
+    };
+
+    OrderedListener listener;
+    (void)listener.extractData();
+    TS_ASSERT_EQUALS(listener.calls.size(), 2u);
+    TS_ASSERT_EQUALS(listener.calls[0], 1);
+    TS_ASSERT_EQUALS(listener.calls[1], 2);
+  }
+
+  void test_throw_in_onBeforeExtract_skips_doExtractData() {
+    class ThrowingHookListener : public Mantid::API::LiveListener {
+    public:
+      int doExtractCalls{0};
+      std::string name() const override { return "ThrowingHookListener"; }
+      bool supportsHistory() const override { return false; }
+      bool buffersEvents() const override { return false; }
+      bool connect(const Poco::Net::SocketAddress &) override { return true; }
+      void start(Mantid::Types::Core::DateAndTime) override {}
+      bool isConnected() override { return true; }
+      int runNumber() const override { return 0; }
+      void setAlgorithm(const Mantid::API::IAlgorithm &) override {}
+
+    protected:
+      void onBeforeExtract() override { throw std::runtime_error("hook aborted"); }
+      std::shared_ptr<Mantid::API::Workspace> doExtractData() override {
+        ++doExtractCalls;
+        return nullptr;
+      }
+    };
+
+    ThrowingHookListener listener;
+    TS_ASSERT_THROWS(listener.extractData(), const std::runtime_error &);
+    TS_ASSERT_EQUALS(listener.doExtractCalls, 0);
+  }
+
+  void test_throw_in_doExtractData_preserves_onBeforeExtract_side_effects() {
+    // C1-style invariant: an Exception::NotYet (or any throw) from
+    // doExtractData() must NOT roll back side effects committed by
+    // onBeforeExtract(). LoadLiveData relies on this so that a queued
+    // run-state edge survives the retry loop.
+    class SideEffectListener : public Mantid::API::LiveListener {
+    public:
+      int hookCounter{0};
+      std::string name() const override { return "SideEffectListener"; }
+      bool supportsHistory() const override { return false; }
+      bool buffersEvents() const override { return false; }
+      bool connect(const Poco::Net::SocketAddress &) override { return true; }
+      void start(Mantid::Types::Core::DateAndTime) override {}
+      bool isConnected() override { return true; }
+      int runNumber() const override { return 0; }
+      void setAlgorithm(const Mantid::API::IAlgorithm &) override {}
+
+    protected:
+      void onBeforeExtract() override { ++hookCounter; }
+      std::shared_ptr<Mantid::API::Workspace> doExtractData() override { throw std::runtime_error("not yet"); }
+    };
+
+    SideEffectListener listener;
+    TS_ASSERT_THROWS(listener.extractData(), const std::runtime_error &);
+    TS_ASSERT_EQUALS(listener.hookCounter, 1);
+    // A subsequent call still runs the hook (side effects accumulate).
+    TS_ASSERT_THROWS(listener.extractData(), const std::runtime_error &);
+    TS_ASSERT_EQUALS(listener.hookCounter, 2);
   }
 };

@@ -97,7 +97,7 @@ ILiveListener::RunStatus SINQHMListener::runStatus() {
   }
 }
 
-std::shared_ptr<Workspace> SINQHMListener::extractData() {
+std::shared_ptr<Workspace> SINQHMListener::doExtractData() {
   static const char *dimNames[] = {"x", "y", "z", "t"};
 
   if (dimDirty) {

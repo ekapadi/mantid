@@ -65,9 +65,9 @@ void KafkaHistoListener::start(Types::Core::DateAndTime startTime) {
 }
 
 /// @copydoc ILiveListener::extractData
-std::shared_ptr<API::Workspace> KafkaHistoListener::extractData() {
+std::shared_ptr<API::Workspace> KafkaHistoListener::doExtractData() {
   if (!m_decoder) {
-    g_log.error("KafkaHistoListener::extractData(): Kafka is not connected");
+    g_log.error("KafkaHistoListener::doExtractData(): Kafka is not connected");
     throw Kernel::Exception::InternetError("Kafka is not connected");
   }
 

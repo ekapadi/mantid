@@ -35,7 +35,7 @@ public:
 
   bool connect(const Poco::Net::SocketAddress &address) override;
   void start(const Types::Core::DateAndTime startTime = Types::Core::DateAndTime()) override;
-  std::shared_ptr<API::Workspace> extractData() override;
+  std::shared_ptr<API::Workspace> doExtractData() override;
 
   ILiveListener::RunStatus runStatus() override;
   // Note: runStatus() might actually update the value of m_status, so
