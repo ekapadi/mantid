@@ -48,6 +48,7 @@ set(TEST_FILES
     LiveDataAlgorithmTest.h
     LoadLiveDataTest.h
     MonitorLiveDataTest.h
+    SNSLiveEventDataListenerNoNetworkTest.h
     StartLiveDataTest.h
 )
 

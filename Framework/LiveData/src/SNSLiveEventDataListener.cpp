@@ -397,7 +397,7 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::BankedEventPkt &pkt) {
   // First, check to see if the run has been paused.  We don't process
   // the events if we're paused unless the user has specifically overridden
   // this behavior with the livelistener.keeppausedevents property.
-  if (m_runPaused && (!m_keepPausedEvents)) {
+  if (m_isDasPaused && (!m_keepPausedEvents)) {
     return false;
   }
 
@@ -633,29 +633,29 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
   const bool haveRunNumber = m_eventBuffer->run().hasProperty("run_number");
 
   if (pkt.status() == ADARA::RunStatus::NEW_RUN) {
-    // Starting a new run:  update m_status and add the run_start & run_number
+    // Starting a new run:  update m_adaraRunStatus and add the run_start & run_number
     // properties
 
-    if (m_status != NoRun) {
+    if (m_adaraRunStatus != NoRun) {
       // Previous status should have been NoRun.  Spit out a warning if it's
       // not.
       g_log.warning() << "Unexpected start of run.  Run status should have been " << NoRun << " (NoRun), but was "
-                      << m_status << '\n';
+                      << m_adaraRunStatus << '\n';
     }
 
     if (m_workspaceInitialized) {
-      m_status = BeginRun;
+      m_pendingTransition = BeginRun;
     } else {
       // Pay close attention here - this gets complicated!
       //
-      // Setting m_status to "Running" is something of a little white lie.  We
+      // Setting m_adaraRunStatus to "Running" is something of a little white lie.  We
       // are in fact at the beginning of a run.  However, since we haven't yet
       // initialized the workspace, this must be one of the first packets we've
       // actually received.  (Probably, the user selected the option to replay
       // history starting from the start of the current run.) Normally, when
       // pkt->status() is NEW_RUN, we'd set the m_pauseNetRead flag to true
       // (see below).  That would cause us to halt reading packets until the
-      // flag was reset down in runStatus().  Having m_status set to BeginRun
+      // flag was reset down in runStatus().  Having m_pendingTransition set to BeginRun
       // would also cause runStatus() to reset all the data we need to
       // initialize the workspace in preparation for a new run.  In most cases,
       // this is exactly what we want.
@@ -671,7 +671,7 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
       // So, we can't set m_pauseNetRead.  That's OK, because we don't actually
       // have any data from a previous run that we need to keep separate from
       // this run (which was the whole purpose of m_pauseNetRead).  However,
-      // when the runStatus() function sees m_status == BeginRun (or EndRun),
+      // when the runStatus() function sees m_pendingTransition == BeginRun (or EndRun),
       // it sets m_workspaceInitialized to false and clears all the old data we
       // used to initialize the workspace.  It does this because it thinks a
       // run transition has happened and new initialization data will be
@@ -682,7 +682,7 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
       // paragraph.)  As such, the initialization data that runStatus() would
       // clear is actually the data that we need.
       //
-      // So, by setting m_status to Running, we avoid runStatus() wiping out our
+      // So, by setting m_adaraRunStatus to Running, we avoid runStatus() wiping out our
       // workspace initialization.  We then call setRunDetails() (which would
       // normally happen down in runStatus(), except that we've just gone out
       // of our way to make sure that part of runStatus() *DOESN'T* get
@@ -690,14 +690,14 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
       //
       // It's debatable whether runStatus() should retain that implicit
       // asumption of m_pauseNetRead being true, or should explicitly check its
-      // state in addition to m_status.  Either way, you're still going to need
+      // state in addition to m_adaraRunStatus.  Either way, you're still going to need
       // several paragraphs of comments to explain what the heck is going on.
-      m_status = Running;
+      m_adaraRunStatus = Running;
       setRunDetails(pkt);
     }
 
     // Add the run_number property
-    if (m_status == BeginRun) {
+    if (m_pendingTransition == BeginRun) {
       if (haveRunNumber) {
         // run_number should not exist at this point, and if it does, we can't
         // do much about it.
@@ -719,22 +719,22 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
     }
 
     // See detailed comments below for what the m_pauseNetRead flag does and the
-    // comments above about m_status for why we don't always set it.
+    // comments above about m_adaraRunStatus for why we don't always set it.
     if (m_workspaceInitialized) {
       m_pauseNetRead = true;
     }
 
   } else if (pkt.status() == ADARA::RunStatus::END_RUN) {
-    // Run has ended:  update m_status, set the end time and set the flag
+    // Run has ended:  update m_adaraRunStatus, set the end time and set the flag
     // to stop parsing network packets.  (see comments below for why)
-    if ((m_status != Running) && (m_status != BeginRun)) {
+    if ((m_adaraRunStatus != Running) && (m_pendingTransition != BeginRun)) {
       // Previous status should have been Running or BeginRun.  Spit out a
       // warning if it's not.  (If it's BeginRun, that's fine.  It just means
       // that the run ended before extractData() was called.)
       g_log.warning() << "Unexpected end of run.  Run status should have been " << Running << " (Running), but was "
-                      << m_status << '\n';
+                      << m_adaraRunStatus << '\n';
     }
-    m_status = EndRun;
+    m_pendingTransition = EndRun;
 
     // Add the run_end property
     m_eventBuffer->mutableRun().addProperty("run_end", timeFromPacket(pkt).toISO8601String());
@@ -1139,13 +1139,13 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::AnnotationPkt &pkt) {
     case ADARA::MarkerType::PAUSE:
       m_eventBuffer->mutableRun().getTimeSeriesProperty<int>(PAUSE_PROPERTY)->addValue(timeFromPacket(pkt), 1);
       g_log.information() << "Run paused\n";
-      m_runPaused = true;
+      m_isDasPaused = true;
       break;
 
     case ADARA::MarkerType::RESUME:
       m_eventBuffer->mutableRun().getTimeSeriesProperty<int>(PAUSE_PROPERTY)->addValue(timeFromPacket(pkt), 0);
       g_log.information() << "Run resumed\n";
-      m_runPaused = false;
+      m_isDasPaused = false;
       break;
 
     case ADARA::MarkerType::OVERALL_RUN_COMMENT:
@@ -1477,7 +1477,7 @@ ILiveListener::RunStatus SNSLiveEventDataListener::runStatus() {
     throw(*m_backgroundException);
   }
 
-  // Need to protect against m_status and m_deferredRunDetailsPkt
+  // Need to protect against m_adaraRunStatus/m_pendingTransition and m_deferredRunDetailsPkt
   // getting out of sync in the (currently only one) case where the
   // background thread has not been paused...
   std::lock_guard<std::mutex> scopedLock(m_mutex);
@@ -1486,13 +1486,13 @@ ILiveListener::RunStatus SNSLiveEventDataListener::runStatus() {
   // extract data, which means the value we return should reflect the
   // value that's appropriate for the events that were returned when
   // extractData was called().
-  ILiveListener::RunStatus rv = m_status;
+  ILiveListener::RunStatus rv = m_pendingTransition.value_or(m_adaraRunStatus);
 
   // It's only appropriate to return EndRun once (ie: when we've just
   // returned the last events from the run).  After that, we need to
   // change the status to NoRun.
   // The same logic applies to BeginRun and Running
-  if (m_status == BeginRun || m_status == EndRun) {
+  if (m_pendingTransition.has_value()) {
     // At run transitions, replace the old workspace with a new one
     // (This ensures that we're not using log data and/or geometry from
     // a previous run that are no longer valid.  SMS is guaranteed to
@@ -1502,7 +1502,7 @@ ILiveListener::RunStatus SNSLiveEventDataListener::runStatus() {
     // These next 3 are what we check for in readyForInitPart2()
     m_instrumentXML.clear();
     m_instrumentName.clear();
-    if (m_status == EndRun) {
+    if (rv == EndRun) {
       // Don't clear this for BeginRun because it was set up in the parser
       // for the RunStatus packet that signaled the beginning of a new
       // run and is thus already set to the correct value.
@@ -1520,15 +1520,17 @@ ILiveListener::RunStatus SNSLiveEventDataListener::runStatus() {
     m_nameMap.clear();
     initWorkspacePart1();
 
-    if (m_status == BeginRun) {
+    if (rv == BeginRun) {
       // Set the run details using the packet we saved from the rxPacket()
       // function
       setRunDetails(*m_deferredRunDetailsPkt);
       m_deferredRunDetailsPkt.reset(); // shared_ptr, so we don't use delete
-      m_status = Running;
-    } else if (m_status == EndRun) {
-      m_status = NoRun;
+      m_adaraRunStatus = Running;
+    } else if (rv == EndRun) {
+      m_adaraRunStatus = NoRun;
     }
+    m_lastTransition = rv;
+    m_pendingTransition.reset();
   }
 
   m_pauseNetRead = false; // make sure the network reads start back up
