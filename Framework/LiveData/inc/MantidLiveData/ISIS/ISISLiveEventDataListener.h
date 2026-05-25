@@ -98,7 +98,7 @@ public:
    *    will call extractData() again a short while later. Any other exception
    *    will stop the calling algorithm.
    */
-  std::shared_ptr<API::Workspace> extractData() override;
+  std::shared_ptr<API::Workspace> doExtractData() override;
 
   //----------------------------------------------------------------------
   // State flags

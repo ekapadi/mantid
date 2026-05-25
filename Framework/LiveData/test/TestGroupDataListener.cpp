@@ -20,7 +20,7 @@ namespace Mantid::LiveData {
 DECLARE_LISTENER(TestGroupDataListener)
 
 /// Constructor
-TestGroupDataListener::TestGroupDataListener() : ILiveListener(), m_buffer() {
+TestGroupDataListener::TestGroupDataListener() : LiveListener(), m_buffer() {
   // Set up the first workspace buffer
   this->createWorkspace();
 }
@@ -56,7 +56,7 @@ void TestGroupDataListener::createWorkspace() {
   API::AnalysisDataService::Instance().deepRemoveGroup("tst");
 }
 
-std::shared_ptr<Workspace> TestGroupDataListener::extractData() {
+std::shared_ptr<Workspace> TestGroupDataListener::doExtractData() {
   // Copy the workspace pointer to a temporary variable
   API::WorkspaceGroup_sptr extracted = m_buffer;
   this->createWorkspace();

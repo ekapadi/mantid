@@ -115,7 +115,7 @@ void FileEventDataListener::start(Types::Core::DateAndTime /*startTime*/) // Ign
   loadChunk();
 }
 
-std::shared_ptr<Workspace> FileEventDataListener::extractData() {
+std::shared_ptr<Workspace> FileEventDataListener::doExtractData() {
   // Once the end of the file is reached, this method throws to stop the calling
   // algorithm.
   // This is equivalent to the end of the run - which we still need to figure

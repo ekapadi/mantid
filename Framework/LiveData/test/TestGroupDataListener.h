@@ -9,7 +9,7 @@
 //----------------------------------------------------------------------
 // Includes
 //----------------------------------------------------------------------
-#include "MantidAPI/ILiveListener.h"
+#include "MantidAPI/LiveListener.h"
 #include "MantidAPI/WorkspaceGroup.h"
 
 namespace Mantid {
@@ -18,7 +18,7 @@ namespace LiveData {
    buffer
     with an identical number of events every time extractData is called.
  */
-class TestGroupDataListener : public API::ILiveListener {
+class TestGroupDataListener : public API::LiveListener {
 public:
   TestGroupDataListener();
 
@@ -28,7 +28,7 @@ public:
 
   bool connect(const Poco::Net::SocketAddress &address) override;
   void start(Types::Core::DateAndTime startTime = Types::Core::DateAndTime()) override;
-  std::shared_ptr<API::Workspace> extractData() override;
+  std::shared_ptr<API::Workspace> doExtractData() override;
 
   bool isConnected() override;
   bool dataReset() override;

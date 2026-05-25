@@ -166,7 +166,7 @@ void ISISHistoDataListener::start(Types::Core::DateAndTime /*startTime*/) // Ign
  * Read the data from the DAE.
  * @return :: A workspace with the data.
  */
-std::shared_ptr<Workspace> ISISHistoDataListener::extractData() {
+std::shared_ptr<Workspace> ISISHistoDataListener::doExtractData() {
 
   if (m_timeRegime < 0) {
     m_timeRegime = getTimeRegimeToLoad();

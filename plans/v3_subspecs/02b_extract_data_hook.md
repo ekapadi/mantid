@@ -129,8 +129,35 @@ Decision is captured in this commit's PR description.
 - `ninja Framework LiveData SINQ workbench` — succeeds, proving every
   in-tree listener has been renamed.
 - `ninja AllTests` — **required** before `ctest`.
-- `ctest -R "Listener|LiveData"` — all pass.
-- `pre-commit run --files <changed>`.
+- `ctest -R "Listener|LiveData"` — all pass, including the three new
+  template-method tests:
+  - `test_extractData_calls_onBeforeExtract_then_doExtractData`
+  - `test_throw_in_onBeforeExtract_skips_doExtractData`
+  - `test_throw_in_doExtractData_preserves_onBeforeExtract_side_effects`
+- `pre-commit run --files \`
+  `Framework/API/inc/MantidAPI/LiveListener.h \`
+  `Framework/API/src/LiveListener.cpp \`
+  `Framework/API/test/LiveListenerTest.h \`
+  `Framework/LiveData/inc/MantidLiveData/FileEventDataListener.h \`
+  `Framework/LiveData/src/FileEventDataListener.cpp \`
+  `Framework/LiveData/inc/MantidLiveData/FakeEventDataListener.h \`
+  `Framework/LiveData/src/FakeEventDataListener.cpp \`
+  `Framework/LiveData/inc/MantidLiveData/SNSLiveEventDataListener.h \`
+  `Framework/LiveData/src/SNSLiveEventDataListener.cpp \`
+  `Framework/LiveData/inc/MantidLiveData/ISIS/ISISLiveEventDataListener.h \`
+  `Framework/LiveData/src/ISIS/ISISLiveEventDataListener.cpp \`
+  `Framework/LiveData/inc/MantidLiveData/ISIS/ISISHistoDataListener.h \`
+  `Framework/LiveData/src/ISIS/ISISHistoDataListener.cpp \`
+  `Framework/LiveData/inc/MantidLiveData/Kafka/KafkaEventListener.h \`
+  `Framework/LiveData/src/Kafka/KafkaEventListener.cpp \`
+  `Framework/LiveData/inc/MantidLiveData/Kafka/KafkaHistoListener.h \`
+  `Framework/LiveData/src/Kafka/KafkaHistoListener.cpp \`
+  `Framework/SINQ/inc/MantidSINQ/SINQHMListener.h \`
+  `Framework/SINQ/src/SINQHMListener.cpp \`
+  `Framework/LiveData/test/TestDataListener.h \`
+  `Framework/LiveData/test/TestDataListener.cpp \`
+  `Framework/LiveData/test/TestGroupDataListener.h \`
+  `Framework/LiveData/test/TestGroupDataListener.cpp`
 - `clang-tidy` clean on `LiveListener.{h,cpp}`.
 
 ## Done when

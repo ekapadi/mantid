@@ -154,7 +154,7 @@ void ISISLiveEventDataListener::start(Types::Core::DateAndTime startTime) {
 }
 
 // return a workspace with collected events
-std::shared_ptr<API::Workspace> ISISLiveEventDataListener::extractData() {
+std::shared_ptr<API::Workspace> ISISLiveEventDataListener::doExtractData() {
   if (m_eventBuffer.empty() || !m_eventBuffer[0]) {
     // extractData() is called too early
     throw LiveData::Exception::NotYet("The workspace has not yet been initialized.");
