@@ -1,12 +1,21 @@
-# Sub-spec 07 — SNS: move the FSM commit into `extractData()`
+# Sub-spec 07 — SNS: move the FSM commit into `onBeforeExtract()`
+
+> **Cross-reference key**
+> "v3 §X.Y" refers to a section of `plans/listener_refactoring_v3.md`.
+> "OL §X.Y" refers to a section of `plans/listener_refactoring_other_listeners.md`.
 
 ## Goal
 
 The behavioural change at the heart of v3: move the run-state transition
-commit out of `runStatus()` and into Phase 1 of `extractData()`. Remove
-the `SNSLiveEventDataListener::runStatus()` override; the base default
-takes over. This is the commit that fixes the stand-alone `LoadLiveData`
+commit out of `runStatus()` and into the `onBeforeExtract()` hook
+introduced in sub-spec 02b. Remove the
+`SNSLiveEventDataListener::runStatus()` override; the base default takes
+over. This is the commit that fixes the stand-alone `LoadLiveData`
 deadlock.
+
+What v3 §5.3 calls "Phase 1 of `extractData()`" *is* `onBeforeExtract()`
+in this commit. What v3 §5.3 calls "Phase 2/3 of `extractData()`" *is*
+`doExtractData()` (renamed mechanically in sub-spec 02b).
 
 ## Reference
 
@@ -20,10 +29,27 @@ deadlock.
 
 ## Scope
 
-| File                                                               | Change                                                                                                                                                                                                                                                                                           |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `Framework/LiveData/inc/MantidLiveData/SNSLiveEventDataListener.h` | Add the `runState()`, `isPaused()`, `listenerState()`, `lastTransition()` public overrides per v3 §4.2. Remove the `runStatus()` override declaration.                                                                                                                                           |
-| `Framework/LiveData/src/SNSLiveEventDataListener.cpp`              | Implement the four pure getters per v3 §5.1. Rewrite `extractData()` per v3 §5.3 (Phase 1 dequeue → hook dispatch → set `m_lastTransition`; Phase 2/3 unchanged). Delete the `runStatus()` override. Add the single-slot invariant `std::runtime_error` to `rxPacket(RunStatusPkt)` per v3 §5.2. |
+| File                                                               | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Framework/LiveData/inc/MantidLiveData/SNSLiveEventDataListener.h` | Add the `runState()`, `isPaused()`, `listenerState()`, `lastTransition()` public overrides per v3 §4.2. Declare `protected: void onBeforeExtract() override;`. Remove the `runStatus()` override declaration.                                                                                                                                                                                                                                                                                        |
+| `Framework/LiveData/src/SNSLiveEventDataListener.cpp`              | Implement the four pure getters per v3 §5.1. Implement `onBeforeExtract()` with the body that v3 §5.3 calls "Phase 1" (dequeue `m_pendingTransition`, dispatch `onBeginRun`/`onEndRun`, set `m_lastTransition`). `doExtractData()` (already renamed in sub-spec 02b) keeps the body that v3 §5.3 calls Phase 2/3 (workspace-init wait + EventWorkspace build + swap). Delete the `runStatus()` override. Add the single-slot invariant `std::runtime_error` to `rxPacket(RunStatusPkt)` per v3 §5.2. |
+
+### Adjustment versus v3 §5.3
+
+v3 §5.3 shows the full `extractData()` body as a single function. Under
+sub-spec 02b that function is split:
+
+- The code labelled **Phase 1** in v3 §5.3 lives in `onBeforeExtract()`.
+- The code labelled **Phase 2** and **Phase 3** lives in `doExtractData()`.
+- The chaining of the two (and the `m_backgroundException` rethrow at the
+  top) is performed once and for all by the
+  `LiveListener::extractData()` template method from sub-spec 02b — do
+  **not** re-implement it here.
+
+The semantic content of v3 §5.3 is preserved exactly, including the
+exception-safety property that an `Exception::NotYet` thrown from
+`doExtractData()` (Phase 2) leaves the side effects from
+`onBeforeExtract()` (Phase 1) intact, which is what the C1 fix relies on.
 
 ### Critical detail (C1)
 

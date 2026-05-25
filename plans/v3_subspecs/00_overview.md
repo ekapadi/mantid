@@ -13,23 +13,27 @@ alongside each sub-spec.
 
 ## Sequence
 
-| #   | Sub-spec                                     | Scope                                                                                    |
-| --- | -------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| 1   | `01_base_interface.md`                       | Add new pure getters to `ILiveListener` with safe defaults. No subclass changes.         |
-| 2   | `02_side_effect_free_listeners.md`           | Trivial `runState()`/`listenerState()` overrides for 7 simple listeners + mocks.         |
-| 3   | `03_fake_event_data_listener.md`             | Fix `FakeEventDataListener` anti-pattern: move run-number mutation into `extractData()`. |
-| 4   | `04_sinq_hm_listener.md`                     | Fix `SINQHMListener` anti-pattern: move HTTP poll out of `runStatus()`.                  |
-| 5   | `05_sns_split_status_field.md`               | Split `SNSLiveEventDataListener::m_status` into three fields; rename `m_runPaused`.      |
-| 6   | `06_sns_extract_transition_hooks.md`         | Extract `onBeginRun`/`onEndRun`/`onRunPause`; still called from old locations.           |
-| 7   | `07_sns_commit_in_extract_data.md`           | Move the FSM commit into `extractData()`; remove the `runStatus()` override.             |
-| 8   | `08_load_live_data_standalone_regression.md` | Add the regression test that proves the stand-alone `LoadLiveData` deadlock is fixed.    |
-| 9   | `09_tighten_interface_and_docs.md`           | Promote `listenerState()` to pure virtual; release notes; deprecation messaging.         |
+| #   | Sub-spec                                     | Scope                                                                                                                                                                                    |
+| --- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `01_base_interface.md`                       | Add new pure getters to `ILiveListener` with safe defaults. No subclass changes.                                                                                                         |
+| 2   | `02_side_effect_free_listeners.md`           | Trivial `runState()`/`listenerState()` overrides for 7 simple listeners + mocks.                                                                                                         |
+| 2b  | `02b_extract_data_hook.md`                   | Promote `LiveListener::extractData()` to a Template Method; add `onBeforeExtract()` + `doExtractData()`. Rename every concrete listener's `extractData()` override to `doExtractData()`. |
+| 3   | `03_fake_event_data_listener.md`             | Fix `FakeEventDataListener` anti-pattern via `onBeforeExtract()`.                                                                                                                        |
+| 4   | `04_sinq_hm_listener.md`                     | Fix `SINQHMListener` anti-pattern via `onBeforeExtract()`.                                                                                                                               |
+| 5   | `05_sns_split_status_field.md`               | Split `SNSLiveEventDataListener::m_status` into three fields; rename `m_runPaused`.                                                                                                      |
+| 6   | `06_sns_extract_transition_hooks.md`         | Extract `onBeginRun`/`onEndRun`/`onRunPause`; still called from old locations.                                                                                                           |
+| 7   | `07_sns_commit_in_extract_data.md`           | Move the FSM commit into `onBeforeExtract()`; remove the `runStatus()` override.                                                                                                         |
+| 8   | `08_load_live_data_standalone_regression.md` | Add the regression test that proves the stand-alone `LoadLiveData` deadlock is fixed.                                                                                                    |
+| 9   | `09_tighten_interface_and_docs.md`           | Promote `listenerState()` to pure virtual; release notes; deprecation messaging.                                                                                                         |
 
 ## Dependency invariants
 
 - Each sub-spec depends only on the immediately previous one (linear DAG).
+- 02b depends on 02 (it touches every listener that 02 just touched).
+- Sub-specs 3 and 4 depend on 02b (they override the new hook).
 - Sub-specs 3 and 4 may be reordered relative to each other but must come
-  after sub-spec 1 and before sub-spec 9.
+  after sub-spec 02b and before sub-spec 9.
+- Sub-spec 7 depends on 02b, 5, and 6.
 - Sub-spec 8 must follow sub-spec 7 (the fix it tests for).
 - Sub-spec 9 must be last: it tightens the API in ways that depend on every
   prior listener override being in place.

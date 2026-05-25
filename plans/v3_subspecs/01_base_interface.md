@@ -1,5 +1,9 @@
 # Sub-spec 01 — Base interface additions
 
+> **Cross-reference key**
+> "v3 §X.Y" refers to a section of `plans/listener_refactoring_v3.md`.
+> "OL §X.Y" refers to a section of `plans/listener_refactoring_other_listeners.md`.
+
 ## Goal
 
 Add the new pure-getter API to `ILiveListener` without changing the

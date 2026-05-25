@@ -1,5 +1,9 @@
 # Sub-spec 08 — Stand-alone `LoadLiveData` regression test
 
+> **Cross-reference key**
+> "v3 §X.Y" refers to a section of `plans/listener_refactoring_v3.md`.
+> "OL §X.Y" refers to a section of `plans/listener_refactoring_other_listeners.md`.
+
 ## Goal
 
 Add the integration regression test that proves the original motivating

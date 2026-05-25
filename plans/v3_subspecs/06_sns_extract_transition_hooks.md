@@ -1,5 +1,9 @@
 # Sub-spec 06 — SNS: extract transition hooks
 
+> **Cross-reference key**
+> "v3 §X.Y" refers to a section of `plans/listener_refactoring_v3.md`.
+> "OL §X.Y" refers to a section of `plans/listener_refactoring_other_listeners.md`.
+
 ## Goal
 
 Extract the side-effect blocks currently embedded in `runStatus()` and

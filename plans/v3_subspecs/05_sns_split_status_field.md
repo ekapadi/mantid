@@ -1,5 +1,9 @@
 # Sub-spec 05 — SNS: split `m_status` field
 
+> **Cross-reference key**
+> "v3 §X.Y" refers to a section of `plans/listener_refactoring_v3.md`.
+> "OL §X.Y" refers to a section of `plans/listener_refactoring_other_listeners.md`.
+
 ## Goal
 
 Mechanically split `SNSLiveEventDataListener::m_status` into the three v3
@@ -31,7 +35,9 @@ code consumed `m_status`.
 
 - No new public API methods are implemented on the SNS subclass yet (they
   exist as base-class defaults).
-- `extractData()` is untouched.
+- `extractData()` is the template method provided by `LiveListener`
+  (sub-spec 02b); the subclass override is `doExtractData()` and is
+  **untouched** in this commit.
 - `AnnotationPkt` handler is updated only to write `m_isDasPaused` (rename
   only).
 - No `std::runtime_error` invariant checks yet — those land in sub-spec 07.

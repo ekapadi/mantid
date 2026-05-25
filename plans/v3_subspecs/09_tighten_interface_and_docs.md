@@ -1,5 +1,9 @@
 # Sub-spec 09 — Tighten interface, release notes, docs
 
+> **Cross-reference key**
+> "v3 §X.Y" refers to a section of `plans/listener_refactoring_v3.md`.
+> "OL §X.Y" refers to a section of `plans/listener_refactoring_other_listeners.md`.
+
 ## Goal
 
 Final pass: tighten `ILiveListener::listenerState()` to pure virtual now
