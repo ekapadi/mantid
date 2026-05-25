@@ -8,6 +8,7 @@
 
 #include "MantidAPI/IAlgorithm.h"
 #include "MantidAPI/LiveListener.h"
+#include "MantidFrameworkTestHelpers/FakeObjects.h"
 #include "MantidKernel/WarningSuppressions.h"
 #include <cxxtest/TestSuite.h>
 #include <gmock/gmock.h>
@@ -239,18 +240,7 @@ public:
 
     protected:
       std::shared_ptr<Mantid::API::Workspace> doExtractData() override {
-        class TestWorkspace : public Mantid::API::Workspace {
-        public:
-          const std::string id() const override { return "TestWorkspace"; }
-          const std::string toString() const override { return ""; }
-          size_t getMemorySize() const override { return 1; }
-
-        private:
-          TestWorkspace *doClone() const override { return new TestWorkspace(*this); }
-          TestWorkspace *doCloneEmpty() const override { return new TestWorkspace; }
-        };
-
-        auto workspace = std::make_shared<TestWorkspace>();
+        auto workspace = std::make_shared<FakeWorkspace>();
         extractedWorkspace = workspace;
         return workspace;
       }
