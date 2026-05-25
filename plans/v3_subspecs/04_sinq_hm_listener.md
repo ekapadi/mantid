@@ -83,10 +83,18 @@ protected virtual override.
 > stale test objects are rebuilt against any modified listener headers.
 > See sub-spec 01 for rationale.
 
-- `ninja SINQHMListenerTest` builds.
-- `./bin/SINQTest SINQHMListenerTest` (or the equivalent SINQ test
-  executable) passes.
-- `pre-commit run --files <changed>`.
+- `ninja Framework SINQ` — succeeds.
+- `ninja AllTests` — **required** before `ctest`.
+- `ctest -R PSISINQTest_SINQHMListenerTest` passes, including the three
+  new tests:
+  - `test_runState_is_pure_getter`
+  - `test_onBeforeExtract_sets_Running_and_marks_dimDirty_on_first_start`
+  - `test_onBeforeExtract_throws_on_invalid_DAQ_code`
+- `pre-commit run --files \`
+  `Framework/SINQ/inc/MantidSINQ/SINQHMListener.h \`
+  `Framework/SINQ/src/SINQHMListener.cpp \`
+  `Framework/SINQ/test/SINQHMListenerTest.h \`
+  `Framework/SINQ/CMakeLists.txt`
 
 ## Done when
 
