@@ -52,14 +52,25 @@ code consumed `m_status`.
 ## Verification
 
 > **Build note:** Cxxtest test executables are `EXCLUDE_FROM_ALL`. Run
-> `ninja AllTests` (or at least `ninja SNSLiveEventDataListenerTest`)
-> before `ctest` so stale test objects are rebuilt against any modified
-> listener headers. See sub-spec 01 for rationale.
+> `ninja AllTests` before `ctest` so stale test objects are rebuilt
+> against any modified listener headers. See sub-spec 01 for rationale.
 
-- `ninja SNSLiveEventDataListenerTest` builds.
-- `./bin/SNSLiveEventDataListenerTest` passes.
-- `ctest -R "LiveData|SNS"` all pass.
-- `clang-tidy` clean on the two modified files.
+> **SNS network test:** The original `SNSLiveEventDataListenerTest` requires
+> a live SMS server connection and remains excluded from ctest (see comment
+> in `Framework/LiveData/CMakeLists.txt`). Our rename canary lives in the
+> new `SNSLiveEventDataListenerNoNetworkTest`, which constructs the listener
+> directly without `connect()` and runs under ctest.
+
+```bash
+# From the build directory (with pixi environment active):
+ninja AllTests
+ctest -R "LiveData"
+```
+
+- `ninja AllTests` builds cleanly (no errors on `SNSLiveEventDataListener.cpp` or `.h`).
+- `ctest -R "LiveData"` all pass; this now includes
+  `LiveDataTest_SNSLiveEventDataListenerNoNetworkTest`.
+- `clang-tidy` clean on the two modified source files.
 
 ## Done when
 

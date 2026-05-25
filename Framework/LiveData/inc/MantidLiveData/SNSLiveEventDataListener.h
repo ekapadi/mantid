@@ -16,6 +16,7 @@
 #include <Poco/Net/StreamSocket.h>
 #include <Poco/Runnable.h>
 #include <Poco/Timer.h>
+#include <optional>
 #include <set>
 
 namespace Mantid {
@@ -38,9 +39,9 @@ public:
   std::shared_ptr<API::Workspace> doExtractData() override;
 
   ILiveListener::RunStatus runStatus() override;
-  // Note: runStatus() might actually update the value of m_status, so
+  // Note: runStatus() might actually update the value of m_adaraRunStatus, so
   // it probably shouldn't be called by other member functions.  The
-  // logic it uses for updating m_status is only valid if the function
+  // logic it uses for updating m_adaraRunStatus is only valid if the function
   // is only called by the MonitorLiveData algorithm.
 
   int runNumber() const override { return m_runNumber; };
@@ -105,7 +106,9 @@ private:
   // Both values are designed to be passed straight into the TofEvent
   // constructor.
 
-  ILiveListener::RunStatus m_status{RunStatus::NoRun};
+  ILiveListener::RunStatus m_adaraRunStatus{RunStatus::NoRun};
+  std::optional<RunStatus> m_pendingTransition;
+  std::optional<RunStatus> m_lastTransition;
   int m_runNumber{0};
   DataObjects::EventWorkspace_sptr m_eventBuffer;
   ///< Used to buffer events between calls to extractData()
@@ -131,7 +134,7 @@ private:
   bool m_isConnected{false};
 
   Poco::Thread m_thread;
-  std::mutex m_mutex; // protects m_eventBuffer & m_status
+  mutable std::mutex m_mutex; // protects m_eventBuffer & m_adaraRunStatus
   bool m_pauseNetRead{false};
   bool m_stopThread{false}; // background thread checks this periodically.
                             // If true, the thread exits
@@ -147,7 +150,7 @@ private:
 
   // These 2 determine whether or not we filter out events that arrive when
   // the run is paused.
-  bool m_runPaused{false};        // Set to true or false when we receive a
+  bool m_isDasPaused{false};      // Set to true or false when we receive a
                                   // pause/resume marker in an annotation packet. (See
                                   // rxPacket( const ADARA::AnnotationPkt &pkt))
   bool m_keepPausedEvents{false}; // Set from a configuration property
