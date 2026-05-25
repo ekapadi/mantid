@@ -12,6 +12,7 @@
 #include "MantidAPI/LiveListener.h"
 #include "MantidDataObjects/EventWorkspace.h"
 #include "MantidLiveData/ADARA/ADARAParser.h"
+#include "MantidLiveData/DllConfig.h"
 
 #include <Poco/Net/StreamSocket.h>
 #include <Poco/Runnable.h>
@@ -25,7 +26,9 @@ namespace LiveData {
 /** An implementation of ILiveListener for use at SNS.
  * Connects to the Stream Management Service and receives events from it.
  */
-class SNSLiveEventDataListener : public API::LiveListener, public Poco::Runnable, public ADARA::Parser {
+class MANTID_LIVEDATA_DLL SNSLiveEventDataListener : public API::LiveListener,
+                                                     public Poco::Runnable,
+                                                     public ADARA::Parser {
 public:
   SNSLiveEventDataListener();
   ~SNSLiveEventDataListener() override;
@@ -53,6 +56,21 @@ public:
 protected:
   using ADARA::Parser::rxPacket;
   // virtual bool rxPacket( const ADARA::Packet &pkt);
+
+  /// Called from runStatus() under m_mutex when a BeginRun transition is consumed.
+  /// Resets workspace-initialisation state and applies run details from the
+  /// deferred RunStatusPkt.  Throws std::runtime_error if m_deferredRunDetailsPkt
+  /// is null (invariant violation in the producer side).
+  virtual void onBeginRun();
+
+  /// Called from runStatus() under m_mutex when an EndRun transition is consumed.
+  /// Resets workspace-initialisation state.
+  virtual void onEndRun();
+
+  /// Called from rxPacket(AnnotationPkt) under m_mutex when a PAUSE or RESUME
+  /// annotation is received.  Sets m_isDasPaused without touching m_adaraRunStatus.
+  /// @param paused  true for PAUSE, false for RESUME.
+  virtual void onRunPause(bool paused);
   bool rxPacket(const ADARA::AnnotationPkt &pkt) override;
   bool rxPacket(const ADARA::BankedEventPkt &pkt) override;
   bool rxPacket(const ADARA::BeamlineInfoPkt &pkt) override;
