@@ -55,8 +55,13 @@ sub-spec 07) cover behaviour.
 
 ## Verification
 
+> **Build note:** Cxxtest test executables are `EXCLUDE_FROM_ALL`. Run
+> `ninja AllTests` before `ctest` so stale test objects are rebuilt
+> against any modified listener headers. See sub-spec 01 for rationale.
+
 - `ninja Framework LiveData SINQ` — succeeds (proves every concrete
   listener overrides `listenerState()`).
+- `ninja AllTests` — **required** before `ctest`.
 - `ctest -R "LiveData|Listener|SINQ"` — all pass.
 - `make docs-html` (or pixi equivalent) — succeeds; new release notes
   render.

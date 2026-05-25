@@ -51,6 +51,11 @@ side effects, but now does so via the named hooks.
 
 ## Verification
 
+> **Build note:** Cxxtest test executables are `EXCLUDE_FROM_ALL`. Run
+> `ninja AllTests` (or at least `ninja SNSLiveEventDataListenerTest`)
+> before running the test binary so stale test objects are rebuilt
+> against any modified listener headers. See sub-spec 01 for rationale.
+
 - `ninja SNSLiveEventDataListenerTest` builds.
 - `./bin/SNSLiveEventDataListenerTest` passes.
 - `clang-tidy` clean.

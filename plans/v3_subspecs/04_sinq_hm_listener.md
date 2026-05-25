@@ -78,6 +78,11 @@ protected virtual override.
 
 ## Verification
 
+> **Build note:** Cxxtest test executables are `EXCLUDE_FROM_ALL`. Run
+> `ninja AllTests` (or at least the SINQ test target) before `ctest` so
+> stale test objects are rebuilt against any modified listener headers.
+> See sub-spec 01 for rationale.
+
 - `ninja SINQHMListenerTest` builds.
 - `./bin/SINQTest SINQHMListenerTest` (or the equivalent SINQ test
   executable) passes.

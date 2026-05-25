@@ -52,7 +52,8 @@ public:
   // State flags
   //----------------------------------------------------------------------
   bool isConnected() override;
-  ILiveListener::RunStatus runStatus() override;
+  RunStatus runState() const override;
+  API::ListenerState listenerState() const override;
   int runNumber() const override;
 
 private:

@@ -42,6 +42,11 @@ This sub-spec **is** a test. There is no production change in this commit.
 
 ## Verification
 
+> **Build note:** Cxxtest test executables are `EXCLUDE_FROM_ALL`. Run
+> `ninja AllTests` (or `ninja LoadLiveDataTest`) before running the test
+> binary so stale test objects are rebuilt against any modified listener
+> headers. See sub-spec 01 for rationale.
+
 - `ninja LoadLiveDataTest` builds.
 - `./bin/LoadLiveDataTest test_standalone_LoadLiveData_no_deadlock_after_run_boundary`
   passes (within the watchdog window).

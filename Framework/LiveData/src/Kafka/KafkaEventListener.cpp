@@ -123,9 +123,13 @@ std::shared_ptr<API::Workspace> KafkaEventListener::extractData() {
 /// @copydoc ILiveListener::isConnected
 bool KafkaEventListener::isConnected() { return (m_decoder ? m_decoder->isCapturing() : false); }
 
-/// @copydoc ILiveListener::runStatus
-API::ILiveListener::RunStatus KafkaEventListener::runStatus() {
-  return m_decoder->hasReachedEndOfRun() ? EndRun : Running;
+/// @copydoc ILiveListener::runState
+API::ILiveListener::RunStatus KafkaEventListener::runState() const {
+  return (m_decoder && m_decoder->hasReachedEndOfRun()) ? EndRun : Running;
+}
+
+API::ListenerState KafkaEventListener::listenerState() const {
+  return (m_decoder && m_decoder->isCapturing()) ? API::ListenerState::Connected : API::ListenerState::Disconnected;
 }
 
 /// @copydoc ILiveListener::runNumber
