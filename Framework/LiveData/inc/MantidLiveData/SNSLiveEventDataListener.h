@@ -41,11 +41,10 @@ public:
   void start(const Types::Core::DateAndTime startTime = Types::Core::DateAndTime()) override;
   std::shared_ptr<API::Workspace> doExtractData() override;
 
-  ILiveListener::RunStatus runStatus() override;
-  // Note: runStatus() might actually update the value of m_adaraRunStatus, so
-  // it probably shouldn't be called by other member functions.  The
-  // logic it uses for updating m_adaraRunStatus is only valid if the function
-  // is only called by the MonitorLiveData algorithm.
+  RunStatus runState() const override;
+  bool isPaused() const override;
+  API::ListenerState listenerState() const override;
+  std::optional<RunStatus> lastTransition() const override;
 
   int runNumber() const override { return m_runNumber; };
 
@@ -57,14 +56,19 @@ protected:
   using ADARA::Parser::rxPacket;
   // virtual bool rxPacket( const ADARA::Packet &pkt);
 
-  /// Called from runStatus() under m_mutex when a BeginRun transition is consumed.
-  /// Resets workspace-initialisation state and applies run details from the
-  /// deferred RunStatusPkt.  Throws std::runtime_error if m_deferredRunDetailsPkt
-  /// is null (invariant violation in the producer side).
+  /// Called from LiveListener::extractData() before doExtractData().
+  /// Dequeues any pending run-state transition and dispatches to onBeginRun()
+  /// or onEndRun() as appropriate.
+  void onBeforeExtract() override;
+
+  /// Called from onBeforeExtract() when a BeginRun transition is dequeued.
+  /// Acquires m_mutex itself.  Resets workspace-initialisation state and applies
+  /// run details from the deferred RunStatusPkt.  Throws std::runtime_error if
+  /// m_deferredRunDetailsPkt is null (invariant violation in the producer side).
   virtual void onBeginRun();
 
-  /// Called from runStatus() under m_mutex when an EndRun transition is consumed.
-  /// Resets workspace-initialisation state.
+  /// Called from onBeforeExtract() when an EndRun transition is dequeued.
+  /// Acquires m_mutex itself.  Resets workspace-initialisation state.
   virtual void onEndRun();
 
   /// Called from rxPacket(AnnotationPkt) under m_mutex when a PAUSE or RESUME
@@ -124,14 +128,10 @@ private:
   // Both values are designed to be passed straight into the TofEvent
   // constructor.
 
-  ILiveListener::RunStatus m_adaraRunStatus{RunStatus::NoRun};
-  std::optional<RunStatus> m_pendingTransition;
-  std::optional<RunStatus> m_lastTransition;
   int m_runNumber{0};
   DataObjects::EventWorkspace_sptr m_eventBuffer;
   ///< Used to buffer events between calls to extractData()
 
-  bool m_workspaceInitialized{false};
   std::string m_wsName;
   detid2index_map m_indexMap;        // maps pixel id's to workspace indexes
   detid2index_map m_monitorIndexMap; // Same as above for the monitor workspace
@@ -152,8 +152,6 @@ private:
   bool m_isConnected{false};
 
   Poco::Thread m_thread;
-  mutable std::mutex m_mutex; // protects m_eventBuffer & m_adaraRunStatus
-  bool m_pauseNetRead{false};
   bool m_stopThread{false}; // background thread checks this periodically.
                             // If true, the thread exits
 
@@ -166,16 +164,7 @@ private:
   // 'real' value for that property.
   Types::Core::DateAndTime m_dataStartTime;
 
-  // These 2 determine whether or not we filter out events that arrive when
-  // the run is paused.
-  bool m_isDasPaused{false};      // Set to true or false when we receive a
-                                  // pause/resume marker in an annotation packet. (See
-                                  // rxPacket( const ADARA::AnnotationPkt &pkt))
   bool m_keepPausedEvents{false}; // Set from a configuration property
-
-  // Holds on to any exceptions that were thrown in the background thread so
-  // that we can re-throw them in the forground thread
-  std::shared_ptr<std::runtime_error> m_backgroundException;
 
   // --- Data structures necessary for handling all the process variable info
   // ---
@@ -226,6 +215,37 @@ private:
 
   /// list of monitors that were seen on the stream but are not in the IDF
   std::set<detid_t> m_badMonitors;
+
+protected:
+  // ---------------------------------------------------------------------------
+  // Fields in protected: so that test subclasses can inject state without
+  // requiring friend declarations (which cannot name a class defined in a test
+  // header).  All fields here are guarded by m_mutex unless otherwise noted.
+  // ---------------------------------------------------------------------------
+  mutable std::mutex m_mutex; // protects m_eventBuffer & m_adaraRunStatus
+  bool m_pauseNetRead{false};
+
+  ILiveListener::RunStatus m_adaraRunStatus{RunStatus::NoRun};
+  std::optional<RunStatus> m_pendingTransition;
+  std::optional<RunStatus> m_lastTransition;
+  /// Cleared in onBeforeExtract() only when the previous doExtractData() call
+  /// succeeded (i.e., returned a workspace without throwing).  Allows
+  /// m_lastTransition to persist across NotYet retries (C1 fix) while still
+  /// clearing it once the transition has been successfully delivered to the
+  /// caller (so MonitorLiveData does not re-process the edge on the next tick).
+  bool m_lastExtractSucceeded{false};
+
+  bool m_workspaceInitialized{false};
+
+  // These 2 determine whether or not we filter out events that arrive when
+  // the run is paused.
+  bool m_isDasPaused{false}; // Set to true or false when we receive a
+                             // pause/resume marker in an annotation packet. (See
+                             // rxPacket( const ADARA::AnnotationPkt &pkt))
+
+  // Holds on to any exceptions that were thrown in the background thread so
+  // that we can re-throw them in the foreground thread
+  std::shared_ptr<std::runtime_error> m_backgroundException;
 };
 
 } // namespace LiveData

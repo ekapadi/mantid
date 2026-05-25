@@ -644,6 +644,11 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
     }
 
     if (m_workspaceInitialized) {
+      if (m_pendingTransition.has_value()) {
+        throw std::runtime_error("SNSLiveEventDataListener: pending run-state transition was not "
+                                 "consumed before a new BeginRun arrived — back-pressure invariant "
+                                 "violation.");
+      }
       m_pendingTransition = BeginRun;
     } else {
       // Pay close attention here - this gets complicated!
@@ -655,8 +660,8 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
       // history starting from the start of the current run.) Normally, when
       // pkt->status() is NEW_RUN, we'd set the m_pauseNetRead flag to true
       // (see below).  That would cause us to halt reading packets until the
-      // flag was reset down in runStatus().  Having m_pendingTransition set to BeginRun
-      // would also cause runStatus() to reset all the data we need to
+      // flag was reset in onBeforeExtract().  Having m_pendingTransition set to
+      // BeginRun would also cause onBeginRun() to reset all the data we need to
       // initialize the workspace in preparation for a new run.  In most cases,
       // this is exactly what we want.
       //
@@ -664,34 +669,29 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
       // do, we will not read the Geometry and BeamMonitor packets that have
       // the data we need to complete the workspace initialization. Until we
       // complete the initialization, the extractData() function won't complete
-      // successfully and the runStatus() function will thus never be called.
-      // Since m_pauseNetRead is reset down in runStatus(), the whole live
-      // listener subsystem basically deadlocks.
+      // successfully and onBeforeExtract() will thus never be called.
+      // Since m_pauseNetRead is reset in onBeginRun()/onEndRun() (called from
+      // onBeforeExtract()), the whole live listener subsystem would deadlock.
       //
       // So, we can't set m_pauseNetRead.  That's OK, because we don't actually
       // have any data from a previous run that we need to keep separate from
       // this run (which was the whole purpose of m_pauseNetRead).  However,
-      // when the runStatus() function sees m_pendingTransition == BeginRun (or EndRun),
-      // it sets m_workspaceInitialized to false and clears all the old data we
-      // used to initialize the workspace.  It does this because it thinks a
-      // run transition has happened and new initialization data will be
-      // arriving shortly.  As such, it implicitly assumes that m_pauseNetRead
-      // was set and we stopped reading packets.  In this particular case, we
-      // can't set m_pauseNetRead, and we're guaranteed to have initialized the
-      // workspace before runStatus() would ever be called. (See the previous
-      // paragraph.)  As such, the initialization data that runStatus() would
+      // when onBeginRun() is dispatched via m_pendingTransition, it sets
+      // m_workspaceInitialized to false and clears all the old data we used to
+      // initialize the workspace.  It does this because it thinks a run
+      // transition has happened and new initialization data will be arriving
+      // shortly.  As such, it implicitly assumes that m_pauseNetRead was set
+      // and we stopped reading packets.  In this particular case, we can't set
+      // m_pauseNetRead, and we're guaranteed to have initialized the workspace
+      // before onBeforeExtract() would ever be called. (See the previous
+      // paragraph.)  As such, the initialization data that onBeginRun() would
       // clear is actually the data that we need.
       //
-      // So, by setting m_adaraRunStatus to Running, we avoid runStatus() wiping out our
-      // workspace initialization.  We then call setRunDetails() (which would
-      // normally happen down in runStatus(), except that we've just gone out
-      // of our way to make sure that part of runStatus() *DOESN'T* get
-      // executed) and everything runs as it should.
-      //
-      // It's debatable whether runStatus() should retain that implicit
-      // asumption of m_pauseNetRead being true, or should explicitly check its
-      // state in addition to m_adaraRunStatus.  Either way, you're still going to need
-      // several paragraphs of comments to explain what the heck is going on.
+      // So, by setting m_adaraRunStatus to Running, we avoid onBeginRun() wiping
+      // out our workspace initialization.  We then call setRunDetails() (which
+      // would normally happen in onBeginRun(), except that we've just gone out
+      // of our way to make sure onBeginRun() is NOT queued) and everything runs
+      // as it should.
       m_adaraRunStatus = Running;
       setRunDetails(pkt);
     }
@@ -728,11 +728,17 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
     // Run has ended:  update m_adaraRunStatus, set the end time and set the flag
     // to stop parsing network packets.  (see comments below for why)
     if ((m_adaraRunStatus != Running) && (m_pendingTransition != BeginRun)) {
-      // Previous status should have been Running or BeginRun.  Spit out a
-      // warning if it's not.  (If it's BeginRun, that's fine.  It just means
-      // that the run ended before extractData() was called.)
+      // Previous status should have been Running.  Spit out a warning if it's
+      // not.  (If m_pendingTransition == BeginRun, the single-slot invariant
+      // check below will throw — in production this can't happen because
+      // m_pauseNetRead blocks END_RUN until extractData() consumes BeginRun.)
       g_log.warning() << "Unexpected end of run.  Run status should have been " << Running << " (Running), but was "
                       << m_adaraRunStatus << '\n';
+    }
+    if (m_pendingTransition.has_value()) {
+      throw std::runtime_error("SNSLiveEventDataListener: pending run-state transition was not "
+                               "consumed before EndRun arrived — back-pressure invariant "
+                               "violation.");
     }
     m_pendingTransition = EndRun;
 
@@ -754,8 +760,8 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
     // Because of this, however, if extractData() isn't called at least once
     // per run, the network packets may start to back up and SMS may eventually
     // disconnect us.
-    // This flag will be cleared down in runStatus(), which is guaranteed to be
-    // called after extractData().
+    // This flag will be cleared in onEndRun() (called from onBeforeExtract()),
+    // which is guaranteed to be called after extractData() has returned data.
 
     m_pauseNetRead = true;
 
@@ -1402,12 +1408,6 @@ void SNSLiveEventDataListener::appendEvent(const uint32_t pixelId, const double 
 /// ready to receive more data.
 /// @return shared pointer to a workspace containing the accumulated data
 std::shared_ptr<Workspace> SNSLiveEventDataListener::doExtractData() {
-  // Check to see if the background thread has thrown an exception.  If so,
-  // re-throw it here.
-  if (m_backgroundException) {
-    throw(*m_backgroundException);
-  }
-
   // Check whether the background thread has actually initialized the workspace
   // (Which won't happen until the SMS sends it the packet with the geometry
   // information in it.)
@@ -1462,17 +1462,100 @@ std::shared_ptr<Workspace> SNSLiveEventDataListener::doExtractData() {
     std::swap(m_eventBuffer, temp);
   } // mutex automatically unlocks here
 
+  // Signal that this call succeeded so onBeforeExtract() clears m_lastTransition
+  // on the next extractData() call (see C1 fix comment in onBeforeExtract()).
+  m_lastExtractSucceeded = true;
+
   return temp;
+}
+
+// ---------------------------------------------------------------------------
+// Pure state getters
+// ---------------------------------------------------------------------------
+
+ILiveListener::RunStatus SNSLiveEventDataListener::runState() const {
+  if (m_backgroundException)
+    throw(*m_backgroundException);
+  std::lock_guard<std::mutex> scopedLock(m_mutex);
+  return m_adaraRunStatus;
+}
+
+bool SNSLiveEventDataListener::isPaused() const {
+  std::lock_guard<std::mutex> scopedLock(m_mutex);
+  return m_isDasPaused;
+}
+
+API::ListenerState SNSLiveEventDataListener::listenerState() const {
+  std::lock_guard<std::mutex> scopedLock(m_mutex);
+  if (m_backgroundException)
+    return API::ListenerState::Error;
+  if (!m_isConnected)
+    return API::ListenerState::Disconnected;
+  if (m_pauseNetRead)
+    return API::ListenerState::ReadWait;
+  return API::ListenerState::Connected;
+}
+
+std::optional<ILiveListener::RunStatus> SNSLiveEventDataListener::lastTransition() const {
+  if (m_backgroundException)
+    throw(*m_backgroundException);
+  std::lock_guard<std::mutex> scopedLock(m_mutex);
+  return m_lastTransition;
+}
+
+// ---------------------------------------------------------------------------
+// onBeforeExtract — Phase 1 of the extractData() commit point
+// ---------------------------------------------------------------------------
+
+void SNSLiveEventDataListener::onBeforeExtract() {
+  // C1 fix: clear m_lastTransition only when the PREVIOUS doExtractData() call
+  // succeeded (returned a workspace).  If it threw NotYet, m_lastTransition is
+  // preserved so the retry loop still sees the edge across multiple invocations.
+  // Once success is confirmed we clear the flag and the stale edge together;
+  // this prevents MonitorLiveData from re-processing the same edge on the next tick.
+  if (m_lastExtractSucceeded) {
+    std::lock_guard<std::mutex> scopedLock(m_mutex);
+    m_lastTransition.reset();
+    m_lastExtractSucceeded = false;
+  }
+
+  // Dequeue the pending transition atomically.
+  std::optional<RunStatus> pending;
+  {
+    std::lock_guard<std::mutex> scopedLock(m_mutex);
+    pending = m_pendingTransition;
+    m_pendingTransition.reset();
+  }
+
+  if (!pending)
+    return; // Nothing to commit; leave m_lastTransition intact (C1 fix).
+
+  // Dispatch to the appropriate hook.  The hooks acquire m_mutex themselves.
+  if (*pending == BeginRun)
+    onBeginRun();
+  else if (*pending == EndRun)
+    onEndRun();
+
+  // Record the transition for lastTransition() queries.
+  {
+    std::lock_guard<std::mutex> scopedLock(m_mutex);
+    m_lastTransition = pending;
+  }
+
+  // Release the background reader (was blocked by m_pauseNetRead since the
+  // transition was queued).
+  m_pauseNetRead = false;
 }
 
 // ---------------------------------------------------------------------------
 // Run-state transition hooks
 // ---------------------------------------------------------------------------
-// All three hooks are called while m_mutex is held by the caller.
-// They do not re-acquire the mutex.  (The lock will move into the hooks
-// themselves in sub-spec 07, when the call site moves to onBeforeExtract().)
+// Hooks acquire m_mutex themselves (call site is now onBeforeExtract(),
+// which does not hold the lock when it calls them).
 
 void SNSLiveEventDataListener::onBeginRun() {
+  std::lock_guard<std::mutex> scopedLock(m_mutex);
+
   // Reset workspace initialisation so that new geometry and device-descriptor
   // packets will be processed.
   m_workspaceInitialized = false;
@@ -1500,6 +1583,8 @@ void SNSLiveEventDataListener::onBeginRun() {
 }
 
 void SNSLiveEventDataListener::onEndRun() {
+  std::lock_guard<std::mutex> scopedLock(m_mutex);
+
   m_workspaceInitialized = false;
 
   m_instrumentXML.clear();
@@ -1516,51 +1601,8 @@ void SNSLiveEventDataListener::onRunPause(bool paused) {
   // Pause state is orthogonal to run state: m_adaraRunStatus remains Running
   // while the DAS is paused.  m_isDasPaused is read by isPaused() and by
   // rxPacket(BankedEventPkt) to gate event appending.
+  // Called from rxPacket(AnnotationPkt) which already holds m_mutex.
   m_isDasPaused = paused;
-}
-
-// ---------------------------------------------------------------------------
-
-/// Check the status of the current run
-
-/// Called by the foreground thread to check the status of the current run
-/// @returns Returns an enum indicating beginning of a run, in the middle
-/// of a run, ending a run or not in a run.
-ILiveListener::RunStatus SNSLiveEventDataListener::runStatus() {
-  // First up, check to see if the background thread has thrown an
-  // exception.  If so, re-throw it here.
-  if (m_backgroundException) {
-    throw(*m_backgroundException);
-  }
-
-  // Need to protect against m_adaraRunStatus/m_pendingTransition and m_deferredRunDetailsPkt
-  // getting out of sync in the (currently only one) case where the
-  // background thread has not been paused...
-  std::lock_guard<std::mutex> scopedLock(m_mutex);
-
-  // The MonitorLiveData algorithm calls this function *after* the call to
-  // extract data, which means the value we return should reflect the
-  // value that's appropriate for the events that were returned when
-  // extractData was called().
-  ILiveListener::RunStatus rv = m_pendingTransition.value_or(m_adaraRunStatus);
-
-  // It's only appropriate to return EndRun once (ie: when we've just
-  // returned the last events from the run).  After that, we need to
-  // change the status to NoRun.  The same logic applies to BeginRun.
-  if (m_pendingTransition.has_value()) {
-    // Dispatch to the named transition hook.  The hooks are called while
-    // m_mutex is held (this function already owns the lock).
-    if (rv == BeginRun)
-      onBeginRun();
-    else if (rv == EndRun)
-      onEndRun();
-    m_lastTransition = rv;
-    m_pendingTransition.reset();
-  }
-
-  m_pauseNetRead = false; // make sure the network reads start back up
-
-  return rv;
 }
 
 // Called by the rxPacket() functions to determine if the packet should be processed
