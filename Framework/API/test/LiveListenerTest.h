@@ -8,6 +8,7 @@
 
 #include "MantidAPI/IAlgorithm.h"
 #include "MantidAPI/LiveListener.h"
+#include "MantidFrameworkTestHelpers/FakeObjects.h"
 #include "MantidKernel/WarningSuppressions.h"
 #include <cxxtest/TestSuite.h>
 #include <gmock/gmock.h>
@@ -125,7 +126,7 @@ public:
 
   // --- New tests for sub-spec 02b template-method extractData() ---
 
-  void test_extractData_calls_onBeforeExtract_then_doExtractData() {
+  void test_extractData_calls_hooks_in_order_pre_do_after() {
     // Records the call order in a shared counter.
     class OrderedListener : public Mantid::API::LiveListener {
     public:
@@ -146,19 +147,22 @@ public:
         calls.push_back(2);
         return nullptr;
       }
+      void onAfterExtract() override { calls.push_back(3); }
     };
 
     OrderedListener listener;
     (void)listener.extractData();
-    TS_ASSERT_EQUALS(listener.calls.size(), 2u);
+    TS_ASSERT_EQUALS(listener.calls.size(), 3u);
     TS_ASSERT_EQUALS(listener.calls[0], 1);
     TS_ASSERT_EQUALS(listener.calls[1], 2);
+    TS_ASSERT_EQUALS(listener.calls[2], 3);
   }
 
-  void test_throw_in_onBeforeExtract_skips_doExtractData() {
+  void test_onAfterExtract_not_called_when_onBeforeExtract_throws() {
     class ThrowingHookListener : public Mantid::API::LiveListener {
     public:
       int doExtractCalls{0};
+      int afterExtractCalls{0};
       std::string name() const override { return "ThrowingHookListener"; }
       bool supportsHistory() const override { return false; }
       bool buffersEvents() const override { return false; }
@@ -175,21 +179,25 @@ public:
         ++doExtractCalls;
         return nullptr;
       }
+      void onAfterExtract() override { ++afterExtractCalls; }
     };
 
     ThrowingHookListener listener;
     TS_ASSERT_THROWS(listener.extractData(), const std::runtime_error &);
     TS_ASSERT_EQUALS(listener.doExtractCalls, 0);
+    TS_ASSERT_EQUALS(listener.afterExtractCalls, 0);
   }
 
-  void test_throw_in_doExtractData_preserves_onBeforeExtract_side_effects() {
-    // C1-style invariant: an Exception::NotYet (or any throw) from
-    // doExtractData() must NOT roll back side effects committed by
-    // onBeforeExtract(). LoadLiveData relies on this so that a queued
-    // run-state edge survives the retry loop.
+  void test_onAfterExtract_not_called_when_doExtractData_throws_NotYet() {
+    class NotYet final : public std::runtime_error {
+    public:
+      using std::runtime_error::runtime_error;
+    };
+
     class SideEffectListener : public Mantid::API::LiveListener {
     public:
       int hookCounter{0};
+      int afterExtractCalls{0};
       std::string name() const override { return "SideEffectListener"; }
       bool supportsHistory() const override { return false; }
       bool buffersEvents() const override { return false; }
@@ -202,14 +210,45 @@ public:
 
     protected:
       void onBeforeExtract() override { ++hookCounter; }
-      std::shared_ptr<Mantid::API::Workspace> doExtractData() override { throw std::runtime_error("not yet"); }
+      std::shared_ptr<Mantid::API::Workspace> doExtractData() override { throw NotYet("not yet"); }
+      void onAfterExtract() override { ++afterExtractCalls; }
     };
 
     SideEffectListener listener;
-    TS_ASSERT_THROWS(listener.extractData(), const std::runtime_error &);
+    TS_ASSERT_THROWS(listener.extractData(), const NotYet &);
     TS_ASSERT_EQUALS(listener.hookCounter, 1);
-    // A subsequent call still runs the hook (side effects accumulate).
-    TS_ASSERT_THROWS(listener.extractData(), const std::runtime_error &);
+    TS_ASSERT_EQUALS(listener.afterExtractCalls, 0);
+    TS_ASSERT_THROWS(listener.extractData(), const NotYet &);
     TS_ASSERT_EQUALS(listener.hookCounter, 2);
+    TS_ASSERT_EQUALS(listener.afterExtractCalls, 0);
+  }
+
+  void test_throw_from_onAfterExtract_propagates_and_workspace_is_dropped() {
+    class ThrowingAfterListener : public Mantid::API::LiveListener {
+    public:
+      std::weak_ptr<Mantid::API::Workspace> extractedWorkspace;
+
+      std::string name() const override { return "ThrowingAfterListener"; }
+      bool supportsHistory() const override { return false; }
+      bool buffersEvents() const override { return false; }
+      bool connect(const Poco::Net::SocketAddress &) override { return true; }
+      void start(Mantid::Types::Core::DateAndTime) override {}
+      bool isConnected() override { return true; }
+      Mantid::API::ListenerState listenerState() const override { return Mantid::API::ListenerState::Connected; }
+      int runNumber() const override { return 0; }
+      void setAlgorithm(const Mantid::API::IAlgorithm &) override {}
+
+    protected:
+      std::shared_ptr<Mantid::API::Workspace> doExtractData() override {
+        auto workspace = std::make_shared<FakeWorkspace>();
+        extractedWorkspace = workspace;
+        return workspace;
+      }
+      void onAfterExtract() override { throw std::runtime_error("after extract failed"); }
+    };
+
+    ThrowingAfterListener listener;
+    TS_ASSERT_THROWS(listener.extractData(), const std::runtime_error &);
+    TS_ASSERT(listener.extractedWorkspace.expired());
   }
 };

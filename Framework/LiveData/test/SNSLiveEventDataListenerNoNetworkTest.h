@@ -45,12 +45,11 @@ public:
     m_backgroundException = std::make_shared<std::runtime_error>(msg);
   }
 
-  void setLastExtractSucceeded(bool v) { m_lastExtractSucceeded = v; }
-
   void callOnBeginRun() { onBeginRun(); }
   void callOnEndRun() { onEndRun(); }
   void callOnRunPause(bool p) { onRunPause(p); }
   void callOnBeforeExtract() { onBeforeExtract(); }
+  void callOnAfterExtract() { onAfterExtract(); }
 
   ILiveListener::RunStatus readAdaraRunStatus() const {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -239,12 +238,10 @@ public:
   // -------------------------------------------------------------------------
 
   /** After a BeginRun transition is committed via onBeforeExtract(), a second
-   *  onBeforeExtract() with no pending and no success flag set must leave
-   *  lastTransition() as BeginRun (C1 fix: edge survives across NotYet retries).
-   *  Once the success flag is set (simulating doExtractData() success),
-   *  the next onBeforeExtract() must clear it.
+   *  onBeforeExtract() with no pending must leave lastTransition() as BeginRun
+   *  (C1 fix: edge survives across NotYet retries).
    */
-  void test_lastTransition_reports_BeginRun_then_null_after_success() {
+  void test_lastTransition_survives_NotYet_retry() {
     TestableSNSListener listener;
     listener.m_stubHooks = true;
 
@@ -254,16 +251,24 @@ public:
     TS_ASSERT_EQUALS(ILiveListener::BeginRun, *listener.lastTransition());
 
     // Simulate NotYet retry: onBeforeExtract() again with no pending and no
-    // success — edge must survive (C1 fix).
+    // successful extract — edge must survive (C1 fix).
     listener.callOnBeforeExtract();
     TS_ASSERT(listener.lastTransition().has_value());
     TS_ASSERT_EQUALS(ILiveListener::BeginRun, *listener.lastTransition());
+  }
 
-    // Simulate doExtractData() succeeding: set the flag.
-    listener.setLastExtractSucceeded(true);
+  /** onAfterExtract() must clear the committed transition after a successful
+   *  extract so the edge is not re-processed on the next tick.
+   */
+  void test_lastTransition_cleared_after_successful_extract() {
+    TestableSNSListener listener;
+    listener.m_stubHooks = true;
 
-    // Next onBeforeExtract() with no pending must now clear the edge.
+    listener.injectPendingTransition(ILiveListener::BeginRun);
     listener.callOnBeforeExtract();
+    TS_ASSERT_EQUALS(ILiveListener::BeginRun, *listener.lastTransition());
+
+    listener.callOnAfterExtract();
     TS_ASSERT(!listener.lastTransition().has_value());
   }
 
@@ -276,9 +281,8 @@ public:
     listener.callOnBeforeExtract();
     TS_ASSERT_EQUALS(ILiveListener::EndRun, *listener.lastTransition());
 
-    // After success: edge cleared on next call.
-    listener.setLastExtractSucceeded(true);
-    listener.callOnBeforeExtract();
+    // After success: edge cleared by onAfterExtract().
+    listener.callOnAfterExtract();
     TS_ASSERT(!listener.lastTransition().has_value());
   }
 
@@ -300,9 +304,8 @@ public:
     // runStatus() should report the edge.
     TS_ASSERT_EQUALS(ILiveListener::BeginRun, listener.runStatus());
 
-    // Simulate success + next onBeforeExtract() clearing the edge.
-    listener.setLastExtractSucceeded(true);
-    listener.callOnBeforeExtract();
+    // Simulate success clearing the edge in the post-extract hook.
+    listener.callOnAfterExtract();
 
     // Now runStatus() must fall back to runState().
     // onBeginRun() was stubbed, so m_adaraRunStatus is still NoRun.

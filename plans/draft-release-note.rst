@@ -1,4 +1,4 @@
-.. Draft release notes for the live-listener refactoring (sub-specs 01–09).
+.. Draft release notes for the live-listener refactoring (sub-specs 01–10).
 .. Copy the relevant items into the real v6.x release directories when
 .. the PR is merged.  See dev-docs/source/LiveListenerMigration.rst for the
 .. developer migration guide.
@@ -27,3 +27,20 @@ New Features
 
   The existing ``runStatus()`` method is now deprecated; see the migration
   guide in ``dev-docs/source/LiveListenerMigration.rst``.
+
+- ``API::LiveListener`` now provides a three-phase template method for
+  ``extractData()``.  Subclasses that previously overrode ``extractData()``
+  directly should migrate to the three protected hooks:
+
+  - ``onBeforeExtract()`` — runs unconditionally before workspace
+    construction; use for pre-extract bookkeeping (e.g. dequeuing a
+    pending run-state transition).
+  - ``doExtractData()`` — pure virtual; the actual workspace-construction
+    step (replaces the previous ``extractData()`` override body).
+  - ``onAfterExtract()`` — runs only when ``doExtractData()`` returns
+    normally, i.e. on the success path; use for post-extract bookkeeping
+    that must **not** execute if extraction throws (e.g.
+    ``Exception::NotYet``).  The default implementation is a no-op.
+
+  ``extractData()`` is now ``final`` on ``API::LiveListener``; downstream
+  listeners that derive from ``ILiveListener`` directly are unaffected.
