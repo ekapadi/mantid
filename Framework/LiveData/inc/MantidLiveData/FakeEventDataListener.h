@@ -15,6 +15,7 @@
 #include "MantidKernel/MersenneTwister.h"
 #include <Poco/Timer.h>
 #include <mutex>
+#include <optional>
 
 namespace Mantid {
 namespace LiveData {
@@ -35,8 +36,13 @@ public:
   std::shared_ptr<API::Workspace> doExtractData() override;
 
   bool isConnected() override;
-  ILiveListener::RunStatus runStatus() override;
+  ILiveListener::RunStatus runState() const override;
+  API::ListenerState listenerState() const override;
+  std::optional<ILiveListener::RunStatus> lastTransition() const override;
   int runNumber() const override;
+
+protected:
+  void onBeforeExtract() override;
 
 private:
   void generateEvents(Poco::Timer &);
@@ -57,6 +63,11 @@ private:
 
   /// Fake run number to give
   int m_runNumber;
+
+  /// Current DAS run state, updated atomically by onBeforeExtract().
+  RunStatus m_runState{Running};
+  /// The run-state edge committed by the most recent extractData() call.
+  std::optional<RunStatus> m_lastTransition;
 
   /// Mutex to exclude generateEvents() and extractData().
   std::mutex m_mutex;

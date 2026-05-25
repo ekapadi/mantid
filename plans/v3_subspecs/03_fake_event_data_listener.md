@@ -59,14 +59,21 @@ window, not the precise wall-clock timing.
 ## Verification
 
 > **Build note:** Cxxtest test executables are `EXCLUDE_FROM_ALL`. Run
-> `ninja AllTests` (or at least `ninja FakeEventDataListenerTest`) before
+> `ninja AllTests` (or at least `ninja LiveDataTest`) before
 > `ctest` so stale test objects are rebuilt against any modified listener
 > headers. See sub-spec 01 for rationale.
 
-- `ninja FakeEventDataListenerTest` builds.
-- `./bin/FakeEventDataListenerTest` passes.
-- `ctest -R FakeEventDataListener` passes.
-- `pre-commit run --files <changed>`.
+- `ninja Framework LiveData` — succeeds.
+- `ninja AllTests` — **required** before `ctest`.
+- `ctest -R FakeEventDataListener` passes, including the four new tests:
+  - `test_runState_is_pure_getter`
+  - `test_onBeforeExtract_advances_runNumber_at_EndRun`
+  - `test_lastTransition_reports_EndRun_once`
+  - `test_periodic_EndRun_cadence_matches_legacy`
+- `pre-commit run --files \`
+  `Framework/LiveData/inc/MantidLiveData/FakeEventDataListener.h \`
+  `Framework/LiveData/src/FakeEventDataListener.cpp \`
+  `Framework/LiveData/test/FakeEventDataListenerTest.h`
 
 ## Done when
 
