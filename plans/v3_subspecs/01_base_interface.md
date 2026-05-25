@@ -45,9 +45,19 @@ overrides `runState()` and `lastTransition()` for the test only.
 
 ## Verification
 
+> **Note:** Cxxtest unit-test executables are `EXCLUDE_FROM_ALL`. When
+> `ILiveListener.h` changes (vtable layout), the test `.o` files and test
+> binaries will NOT be rebuilt by `ninja Framework` (or any other partial
+> target). Stale test binaries linked against the old vtable layout will
+> appear to "pass build" but crash at runtime (segfaults, `munmap_chunk`,
+> or wrong virtual dispatch). Always run `ninja AllTests` before `ctest`
+> after any change to a public listener header.
+
 - `ninja Framework` — succeeds (builds `Framework/API` and all downstream
   modules; confirms every existing listener still compiles against the new
   header).
+- `ninja AllTests` — rebuilds every unit-test executable against the new
+  `ILiveListener` vtable layout. **Required** before running `ctest`.
 - `ctest -R LiveListenerTest` — passes, including the three new test cases:
   - `test_base_runStatus_default_returns_runState_when_no_edge`
   - `test_base_runStatus_default_returns_lastTransition_when_present`

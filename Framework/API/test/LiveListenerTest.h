@@ -21,7 +21,6 @@ inline std::ostream &operator<<(std::ostream &os, const Poco::Net::SocketAddress
 }
 } // namespace Poco::Net
 
-GNU_DIAG_OFF("deprecated-declarations")
 class MockLiveListener : public Mantid::API::LiveListener {
 public:
   MockLiveListener() : Mantid::API::LiveListener() {
@@ -35,11 +34,11 @@ public:
   MOCK_METHOD(void, start, (Mantid::Types::Core::DateAndTime), (override));
   MOCK_METHOD(std::shared_ptr<Mantid::API::Workspace>, extractData, (), (override));
   MOCK_METHOD(bool, isConnected, (), (override));
-  MOCK_METHOD(Mantid::API::ILiveListener::RunStatus, runStatus, (), (override));
+  MOCK_METHOD(Mantid::API::ILiveListener::RunStatus, runState, (), (const, override));
+  MOCK_METHOD(Mantid::API::ListenerState, listenerState, (), (const, override));
   MOCK_METHOD(int, runNumber, (), (const, override));
   MOCK_METHOD(void, setAlgorithm, (const Mantid::API::IAlgorithm &), (override));
 };
-GNU_DIAG_ON("deprecated-declarations")
 
 // ---------------------------------------------------------------------------
 // Minimal test subclass for the new pure-getter default tests.

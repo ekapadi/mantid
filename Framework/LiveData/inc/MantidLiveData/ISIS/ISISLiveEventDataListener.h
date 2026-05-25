@@ -109,10 +109,10 @@ public:
    */
   bool isConnected() override;
 
-  /** Gets the current run status of the listened-to data stream
-   *  @return A value of the RunStatus enumeration indicating the present status
+  /** Returns the current DAS run state.
    */
-  ILiveListener::RunStatus runStatus() override;
+  RunStatus runState() const override;
+  API::ListenerState listenerState() const override;
 
   int runNumber() const override;
 

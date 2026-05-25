@@ -122,8 +122,13 @@ Decision is captured in this commit's PR description.
 
 ## Verification
 
+> **Build note:** Cxxtest test executables are `EXCLUDE_FROM_ALL`. Run
+> `ninja AllTests` before `ctest` to ensure test binaries are rebuilt
+> against any modified listener headers. See sub-spec 01 for rationale.
+
 - `ninja Framework LiveData SINQ workbench` — succeeds, proving every
   in-tree listener has been renamed.
+- `ninja AllTests` — **required** before `ctest`.
 - `ctest -R "Listener|LiveData"` — all pass.
 - `pre-commit run --files <changed>`.
 - `clang-tidy` clean on `LiveListener.{h,cpp}`.

@@ -36,7 +36,8 @@ public:
 
   bool isConnected() override;
   bool dataReset() override;
-  ILiveListener::RunStatus runStatus() override;
+  RunStatus runState() const override;
+  API::ListenerState listenerState() const override;
   int runNumber() const override;
 
 private:

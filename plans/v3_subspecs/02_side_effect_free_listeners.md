@@ -59,9 +59,30 @@ existing algorithm test suites prove the wiring.
 
 ## Verification
 
+> **Build note:** Cxxtest unit-test executables are `EXCLUDE_FROM_ALL`, so
+> `ninja Framework` (or any partial target) will NOT rebuild stale test
+> binaries when listener headers change. Always run `ninja AllTests` before
+> `ctest`. See sub-spec 01 verification note for full rationale.
+
 - `ninja Framework LiveData SINQ` — succeeds.
+- `ninja AllTests` — **required** before `ctest`.
 - `ctest -R "Listener|LiveData"` — all pass.
-- `pre-commit run --files <changed>`.
+- `pre-commit run --files \`
+  `Framework/LiveData/inc/MantidLiveData/FileEventDataListener.h` \
+  `Framework/LiveData/src/FileEventDataListener.cpp` \
+  `Framework/LiveData/inc/MantidLiveData/ISIS/ISISLiveEventDataListener.h` \
+  `Framework/LiveData/src/ISIS/ISISLiveEventDataListener.cpp` \
+  `Framework/LiveData/inc/MantidLiveData/ISIS/ISISHistoDataListener.h` \
+  `Framework/LiveData/src/ISIS/ISISHistoDataListener.cpp` \
+  `Framework/LiveData/inc/MantidLiveData/Kafka/KafkaEventListener.h` \
+  `Framework/LiveData/src/Kafka/KafkaEventListener.cpp` \
+  `Framework/LiveData/inc/MantidLiveData/Kafka/KafkaHistoListener.h` \
+  `Framework/LiveData/src/Kafka/KafkaHistoListener.cpp` \
+  `Framework/LiveData/test/TestGroupDataListener.h` \
+  `Framework/LiveData/test/TestGroupDataListener.cpp` \
+  `Framework/LiveData/test/TestDataListener.h` \
+  `Framework/LiveData/test/TestDataListener.cpp` \
+  `Framework/API/test/LiveListenerTest.h`
 
 ## Done when
 

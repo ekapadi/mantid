@@ -94,23 +94,17 @@ bool FileEventDataListener::isConnected() {
   return true; // For the time being at least
 }
 
-ILiveListener::RunStatus FileEventDataListener::runStatus() {
-  // Say we're outside a run if this is called before start is
-  if (m_nextChunk == 1) {
+ILiveListener::RunStatus FileEventDataListener::runState() const {
+  if (m_nextChunk == 1)
     return NoRun;
-  }
-  // This means the first chunk is being/has just been loaded
-  else if (m_nextChunk == 2) {
+  if (m_nextChunk == 2)
     return BeginRun;
-  }
-  // This means we've read the whole file
-  else if (m_chunkload == nullptr) {
+  if (m_chunkload == nullptr)
     return EndRun;
-  }
-  // Otherwise we're in the run
-  else
-    return Running;
+  return Running;
 }
+
+API::ListenerState FileEventDataListener::listenerState() const { return API::ListenerState::Connected; }
 
 int FileEventDataListener::runNumber() const { return m_runNumber; }
 

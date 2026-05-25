@@ -201,7 +201,11 @@ std::shared_ptr<API::Workspace> ISISLiveEventDataListener::extractData() {
 
 bool ISISLiveEventDataListener::isConnected() { return m_isConnected; }
 
-API::ILiveListener::RunStatus ISISLiveEventDataListener::runStatus() { return Running; }
+API::ILiveListener::RunStatus ISISLiveEventDataListener::runState() const { return Running; }
+
+API::ListenerState ISISLiveEventDataListener::listenerState() const {
+  return m_isConnected ? API::ListenerState::Connected : API::ListenerState::Disconnected;
+}
 
 int ISISLiveEventDataListener::runNumber() const { return m_runNumber; }
 

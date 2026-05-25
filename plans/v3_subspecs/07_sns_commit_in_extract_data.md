@@ -93,8 +93,13 @@ commit.
 
 ## Verification
 
+> **Build note:** Cxxtest test executables are `EXCLUDE_FROM_ALL`. Run
+> `ninja AllTests` before `ctest` so stale test objects are rebuilt
+> against any modified listener headers. See sub-spec 01 for rationale.
+
 - `ninja SNSLiveEventDataListenerTest MonitorLiveDataTest LoadLiveDataTest`
   builds.
+- `ninja AllTests` — **required** before `ctest`.
 - `./bin/SNSLiveEventDataListenerTest`, `MonitorLiveDataTest`,
   `LoadLiveDataTest` all pass.
 - `pre-commit run --files <changed>`.

@@ -145,9 +145,13 @@ bool ISISHistoDataListener::isConnected() {
   return stat == 0;
 }
 
-ILiveListener::RunStatus ISISHistoDataListener::runStatus() {
+ILiveListener::RunStatus ISISHistoDataListener::runState() const {
   // In a run by default
   return Running;
+}
+
+API::ListenerState ISISHistoDataListener::listenerState() const {
+  return m_daeHandle ? API::ListenerState::Connected : API::ListenerState::Disconnected;
 }
 
 int ISISHistoDataListener::runNumber() const {

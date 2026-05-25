@@ -37,7 +37,9 @@ bool TestGroupDataListener::dataReset() {
   return false;
 }
 
-ILiveListener::RunStatus TestGroupDataListener::runStatus() { return Running; }
+ILiveListener::RunStatus TestGroupDataListener::runState() const { return Running; }
+
+API::ListenerState TestGroupDataListener::listenerState() const { return API::ListenerState::Connected; }
 
 int TestGroupDataListener::runNumber() const { return 0; }
 

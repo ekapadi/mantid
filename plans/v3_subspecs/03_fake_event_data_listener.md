@@ -58,6 +58,11 @@ window, not the precise wall-clock timing.
 
 ## Verification
 
+> **Build note:** Cxxtest test executables are `EXCLUDE_FROM_ALL`. Run
+> `ninja AllTests` (or at least `ninja FakeEventDataListenerTest`) before
+> `ctest` so stale test objects are rebuilt against any modified listener
+> headers. See sub-spec 01 for rationale.
+
 - `ninja FakeEventDataListenerTest` builds.
 - `./bin/FakeEventDataListenerTest` passes.
 - `ctest -R FakeEventDataListener` passes.

@@ -82,14 +82,13 @@ std::shared_ptr<API::Workspace> KafkaHistoListener::extractData() {
 /// @copydoc ILiveListener::isConnected
 bool KafkaHistoListener::isConnected() { return (m_decoder ? m_decoder->isCapturing() : false); }
 
-/// @copydoc ILiveListener::runStatus
-API::ILiveListener::RunStatus KafkaHistoListener::runStatus() {
-  if (!m_decoder) {
-    g_log.warning("KafkaHistoListener::runStatus(): Kafka is not connected");
-    return NoRun;
-  }
+/// @copydoc ILiveListener::runState
+API::ILiveListener::RunStatus KafkaHistoListener::runState() const {
+  return (m_decoder && m_decoder->hasReachedEndOfRun()) ? EndRun : Running;
+}
 
-  return m_decoder->hasReachedEndOfRun() ? EndRun : Running;
+API::ListenerState KafkaHistoListener::listenerState() const {
+  return (m_decoder && m_decoder->isCapturing()) ? API::ListenerState::Connected : API::ListenerState::Disconnected;
 }
 
 /// @copydoc ILiveListener::runNumber
