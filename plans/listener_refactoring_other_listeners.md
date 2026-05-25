@@ -29,7 +29,19 @@ so new listeners can be added incrementally and so that mocks can opt out
 selectively. `listenerState()` is `= 0` and so *must* be overridden by every
 concrete listener.
 
----
+> **Template-method note (sub-spec 02b).** `API::LiveListener::extractData()`
+> is finalised in sub-spec 02b and dispatches to two protected hooks:
+> `onBeforeExtract()` (default no-op; foreground-thread "tick" point for
+> commits, polls, synthetic-clock advances, etc.) and `doExtractData()`
+> (pure virtual; the workspace-construction step). Wherever this document
+> shows a private helper (`tickRunState()` in §3.1, `pollStatus()` in §3.6)
+> being called from a wrapped `extractData()`, the **actual** implementation
+> puts that helper's body directly in `onBeforeExtract()` and leaves
+> `doExtractData()` (renamed mechanically in 02b) untouched. See the
+> "Adjustment versus OL §3.1/§3.6" notes in `plans/v3_subspecs/03…` and
+> `plans/v3_subspecs/04…` for the per-listener wording.
+
+______________________________________________________________________
 
 ## 1. Anti-pattern review
 
@@ -40,7 +52,7 @@ inside `runStatus()`** and must be cleaned up:
    mutates `m_nextEndRunTime` and increments `m_runNumber` when it decides
    to emit an `EndRun`.
 
-2. `SINQHMListener::runStatus()` (`SINQHMListener.cpp:60–98`) performs an
+1. `SINQHMListener::runStatus()` (`SINQHMListener.cpp:60–98`) performs an
    HTTP request, parses the response, writes the `hmhost` member, sets the
    `dimDirty` flag when transitioning `NoRun → Running`, and is *also*
    invoked from inside `extractData()` (line 104) specifically to perform
@@ -55,29 +67,29 @@ The remaining listeners (`FileEventDataListener`, `ISISHistoDataListener`,
 `Framework/API/test/LiveListenerTest.h`) have side-effect-free `runStatus()`
 implementations and need only mechanical additions.
 
----
+______________________________________________________________________
 
 ## 2. Listener-by-listener summary matrix
 
-| Listener                                | Side effects in `runStatus()`? | New overrides required                            |
-| --------------------------------------- | ------------------------------ | ------------------------------------------------- |
-| `SNSLiveEventDataListener`              | yes (heavy) — see v3 spec       | full v3 treatment                                 |
-| `FakeEventDataListener`                 | yes (run-number mutation)       | `runState`, `listenerState`, refactor needed      |
-| `SINQHMListener`                        | yes (HTTP + dimDirty mutation)  | `runState`, `listenerState`, refactor needed      |
-| `KafkaEventListener`                    | no                              | `runState`, `listenerState`                       |
-| `KafkaHistoListener`                    | no                              | `runState`, `listenerState`                       |
-| `FileEventDataListener`                 | no                              | `runState`, `listenerState`                       |
-| `ISISLiveEventDataListener`             | no                              | `runState`, `listenerState`                       |
-| `ISISHistoDataListener`                 | no                              | `runState`, `listenerState`                       |
-| `TestGroupDataListener` (test fixture)  | no                              | `runState`, `listenerState`                       |
-| `TestDataListener` (test fixture)       | no                              | `runState`, `listenerState`                       |
-| `MockLiveListener` (in `LiveListenerTest.h`) | no                         | `runState`, `listenerState`                       |
+| Listener                                     | Side effects in `runStatus()`? | New overrides required                       |
+| -------------------------------------------- | ------------------------------ | -------------------------------------------- |
+| `SNSLiveEventDataListener`                   | yes (heavy) — see v3 spec      | full v3 treatment                            |
+| `FakeEventDataListener`                      | yes (run-number mutation)      | `runState`, `listenerState`, refactor needed |
+| `SINQHMListener`                             | yes (HTTP + dimDirty mutation) | `runState`, `listenerState`, refactor needed |
+| `KafkaEventListener`                         | no                             | `runState`, `listenerState`                  |
+| `KafkaHistoListener`                         | no                             | `runState`, `listenerState`                  |
+| `FileEventDataListener`                      | no                             | `runState`, `listenerState`                  |
+| `ISISLiveEventDataListener`                  | no                             | `runState`, `listenerState`                  |
+| `ISISHistoDataListener`                      | no                             | `runState`, `listenerState`                  |
+| `TestGroupDataListener` (test fixture)       | no                             | `runState`, `listenerState`                  |
+| `TestDataListener` (test fixture)            | no                             | `runState`, `listenerState`                  |
+| `MockLiveListener` (in `LiveListenerTest.h`) | no                             | `runState`, `listenerState`                  |
 
 `isPaused()` and `lastTransition()` inherit their base defaults
 (`false` / `nullopt`) for every listener except `SNSLiveEventDataListener`;
 no override is needed elsewhere.
 
----
+______________________________________________________________________
 
 ## 3. Detailed changes per listener
 
@@ -305,7 +317,7 @@ Any algorithm-level mocks (e.g. in `LoadLiveDataTest`, `MonitorLiveDataTest`,
 `StartLiveDataTest`) that derive from `ILiveListener` directly need the
 same two-line addition.
 
----
+______________________________________________________________________
 
 ## 4. Migration ordering
 
@@ -315,31 +327,31 @@ To keep the tree green at every step:
    `listenerState()` pure virtual). The tree will fail to compile until
    every concrete listener provides `listenerState()`.
 
-2. In the same PR, add the two-line `listenerState()` (and the one-line
+1. In the same PR, add the two-line `listenerState()` (and the one-line
    `runState()`) overrides to every side-effect-free listener listed in
    §3.2–§3.5, §3.7, §3.8. Drop their existing `runStatus()` overrides.
 
-3. In the same PR, apply the anti-pattern fixes in §3.1 (`FakeEventDataListener`)
+1. In the same PR, apply the anti-pattern fixes in §3.1 (`FakeEventDataListener`)
    and §3.6 (`SINQHMListener`).
 
-4. Apply the `SNSLiveEventDataListener` rewrite per
+1. Apply the `SNSLiveEventDataListener` rewrite per
    `listener_refactoring_v3.md`.
 
 This is the same single-PR approach the v3 spec recommends; the work is
 small per listener (the cleanups in §3.1 and §3.6 are the only places that
 require any thought).
 
----
+______________________________________________________________________
 
 ## 5. Risk
 
-* **Trivial overrides** (§3.2–§3.5, §3.7, §3.8): no behavioural change.
-* **`FakeEventDataListener` refactor** (§3.1): used only by `FakeEventDataListenerTest`
+- **Trivial overrides** (§3.2–§3.5, §3.7, §3.8): no behavioural change.
+- **`FakeEventDataListener` refactor** (§3.1): used only by `FakeEventDataListenerTest`
   and as a teaching example in `LoadLiveData` integration tests. The
   externally-observable cadence of `EndRun` and the `runNumber` increment is
   preserved; only the trigger moves from `runStatus()` polling to
   `extractData()` invocation.
-* **`SINQHMListener` refactor** (§3.6): the `extractData()` body already
+- **`SINQHMListener` refactor** (§3.6): the `extractData()` body already
   triggers the side effects (line 104), so callers that only invoke
   `extractData()` see no change. Callers that polled `runStatus()` for the
   side effects (HTTP refresh of `hmhost`, `dimDirty` reset) would see no
@@ -347,18 +359,18 @@ require any thought).
   calls `runStatus()`, and it does so after `extractData()`, so the cached
   value matches what the legacy code would have returned.
 
----
+______________________________________________________________________
 
 ## 6. Verification
 
 For every modified listener:
 
-* The listener's existing unit tests must pass unchanged.
-* `clang-tidy` on each modified file.
-* `pre-commit run --files <modified files>`.
+- The listener's existing unit tests must pass unchanged.
+- `clang-tidy` on each modified file.
+- `pre-commit run --files <modified files>`.
 
 For `FakeEventDataListener` and `SINQHMListener` specifically:
 
-* Add a unit test asserting that two consecutive `runState()` calls without
+- Add a unit test asserting that two consecutive `runState()` calls without
   an intervening `extractData()` return the same value and do not mutate
   any other member (the anti-pattern regression test).

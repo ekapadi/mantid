@@ -1,7 +1,8 @@
 # Specification: Refactor SNSLiveEventDataListener State Management
+
 ## (v3.0 — Separate state queries, explicit transition hooks, commit-in-`extractData()`)
 
----
+______________________________________________________________________
 
 ## 1. Objectives
 
@@ -13,7 +14,7 @@ This refactor has three goals, in priority order:
    stand-alone `LoadLiveData`) to ask either question without paying the cost of
    the other.
 
-2. **Separate state-read from state-transition. Make every state mutation
+1. **Separate state-read from state-transition. Make every state mutation
    explicit and named.**
    The current `runStatus()` is a getter with large hidden side effects
    (clearing caches, re-initialising the workspace, consuming the deferred
@@ -21,7 +22,7 @@ This refactor has three goals, in priority order:
    side effects. All mutations must live in named methods — `onBeginRun()`,
    `onEndRun()`, `onRunPause()` — that can be individually understood and tested.
 
-3. **Move as much of the state machine as possible into `extractData()`.**
+1. **Move as much of the state machine as possible into `extractData()`.**
    `extractData()` is the only method that every consumer of `ILiveListener`
    must call, and it is the natural commit point for any pending transition.
    External callers must never need to invoke a transition by hand to keep the
@@ -34,27 +35,27 @@ left edge detection coupled to a mutating call. This v3 spec keeps (3) intact
 while restoring (1) and (2) by separating **observing that a transition
 occurred** from **committing one**.
 
----
+______________________________________________________________________
 
 ## 2. Problem Statement (preserved from v2, expanded)
 
 1. **Conflated state.** `runStatus()` returns a value that is part DAS state
    (`NoRun/BeginRun/Running/EndRun`) and part listener-internal FSM (it mutates
    to "Running" or "NoRun" as a side effect of being called).
-2. **Hidden side effects.** Calling `runStatus()` clears the geometry cache,
+1. **Hidden side effects.** Calling `runStatus()` clears the geometry cache,
    the name map, marks the workspace uninitialised, runs `initWorkspacePart1()`,
    consumes `m_deferredRunDetailsPkt`, and drops `m_pauseNetRead`.
-3. **External-control deadlock.** Stand-alone `LoadLiveData` never calls
+1. **External-control deadlock.** Stand-alone `LoadLiveData` never calls
    `runStatus()`. After a `BeginRun`/`EndRun` packet sets `m_pauseNetRead = true`,
    the background reader stops, the workspace cannot be re-initialised, and the
    next `extractData()` either hits the 10-second `NotYet` timeout or spins
    indefinitely on a stale workspace.
-4. **Implicit ordering contract with `MonitorLiveData`.** The current
+1. **Implicit ordering contract with `MonitorLiveData`.** The current
    implementation depends on `MonitorLiveData` calling `extractData()` first and
    `runStatus()` second within the same loop iteration. The contract is
    undocumented and not enforceable by the type system.
 
----
+______________________________________________________________________
 
 ## 3. Conceptual Model
 
@@ -62,22 +63,22 @@ occurred** from **committing one**.
 
 The ADARA protocol exposes two independent state axes that the current `runStatus()` conflates:
 
-* **Run state** — whether the DAS is in a run (`NoRun/BeginRun/Running/EndRun`).
+- **Run state** — whether the DAS is in a run (`NoRun/BeginRun/Running/EndRun`).
   Driven by `RunStatusPkt`. Transitions require workspace-level coordination
   (cache clears, re-init), so they are queued and committed in `extractData()`.
 
-* **Pause state** — whether the current run is paused.
+- **Pause state** — whether the current run is paused.
   Driven by `AnnotationPkt` `PAUSE`/`RESUME` markers. Orthogonal to run
   state: a run can be in `Running` status while paused, and the ADARA
   protocol does not change the `RunStatus` field on a pause. Pause state
   has **no workspace-level side effects** beyond gating event appending;
   it is therefore applied immediately in the background thread, not queued.
 
-| Question                                       | Answer                | Type              |
-| ---------------------------------------------- | --------------------- | ----------------- |
-| What is the DAS run state right now?           | `RunStatus`           | pure read         |
-| Is the current run paused?                     | `bool`                | pure read         |
-| Is the listener connected / back-pressure / errored? | `ListenerState` | pure read         |
+| Question                                                                        | Answer                | Type      |
+| ------------------------------------------------------------------------------- | --------------------- | --------- |
+| What is the DAS run state right now?                                            | `RunStatus`           | pure read |
+| Is the current run paused?                                                      | `bool`                | pure read |
+| Is the listener connected / back-pressure / errored?                            | `ListenerState`       | pure read |
 | What run-state transition (if any) did the most recent `extractData()` consume? | `optional<RunStatus>` | pure read |
 
 Note that `isPaused()` and `runState()` are orthogonal: they answer
@@ -88,21 +89,22 @@ sees the pause flag regardless of run phase.
 
 ### 3.2 Commit points
 
-| Action                                         | Where                    | How              |
-| ---------------------------------------------- | ------------------------ | ---------------- |
-| Apply a pending run-state transition           | inside `extractData()`   | dispatches to `onBeginRun()` / `onEndRun()` |
-| Apply a pause/resume annotation               | inside `rxPacket(AnnotationPkt)` (background thread) | sets `m_isDasPaused` directly |
+| Action                               | Where                                                   | How                                         |
+| ------------------------------------ | ------------------------------------------------------- | ------------------------------------------- |
+| Apply a pending run-state transition | inside `onBeforeExtract()` (Phase 1 of `extractData()`) | dispatches to `onBeginRun()` / `onEndRun()` |
+| Apply a pause/resume annotation      | inside `rxPacket(AnnotationPkt)` (background thread)    | sets `m_isDasPaused` directly               |
 
 The key reframe versus v2: **"explicit transition methods" means
 named-and-testable, not necessarily public.** Exposing them publicly would
 re-violate objective (3) by letting external code drive the FSM. They are
 *protected virtual* hooks: explicit, individually overridable and testable.
-`onBeginRun()` and `onEndRun()` are dispatched only from `extractData()`
-(foreground thread); `onRunPause()` is dispatched only from
-`rxPacket(AnnotationPkt)` (background thread). The asymmetry is intentional
-and motivated in §3.1 / §5.4.
+`onBeginRun()` and `onEndRun()` are dispatched only from
+`onBeforeExtract()` (foreground thread, before `doExtractData()` runs);
+`onRunPause()` is dispatched only from `rxPacket(AnnotationPkt)`
+(background thread). The asymmetry is intentional and motivated in
+§3.1 / §5.4.
 
----
+______________________________________________________________________
 
 ## 4. Interface Changes
 
@@ -173,6 +175,17 @@ public:
 `ILiveListener` (see §6) that wraps the new pure getters. Concrete listeners
 that already override it can keep doing so, but new listeners need not.
 
+> **Template-method note.** `extractData()` is shown here as pure-virtual
+> on `ILiveListener` for backward compatibility, but the practical base
+> class `API::LiveListener` (which every in-tree concrete listener
+> derives from) finalises `extractData()` and dispatches to two new
+> protected hooks: `onBeforeExtract()` (foreground-thread "tick", default
+> no-op) and `doExtractData()` (pure-virtual; the actual workspace
+> construction). See `plans/v3_subspecs/02b_extract_data_hook.md`. The
+> `extractData()` body shown in §5.3 is therefore split between
+> `onBeforeExtract()` (Phase 1) and `doExtractData()` (Phase 2/3) on the
+> SNS listener.
+
 ### 4.2 SNSLiveEventDataListener.h
 
 ```cpp
@@ -186,17 +199,23 @@ public:
     ListenerState listenerState() const override;
     std::optional<RunStatus> lastTransition() const override;
 
-    // commit point
-    std::shared_ptr<API::Workspace> extractData() override;
-
     // unchanged
     int runNumber() const override { return m_runNumber; }
     bool isConnected() override;
 
 protected:
+    /// Phase 1 of the extraction (see v3 §5.3): commit any queued run-state
+    /// transition. Called by LiveListener::extractData() before
+    /// doExtractData(). Runs on the foreground thread.
+    void onBeforeExtract() override;
+
+    /// Phase 2/3 of the extraction: wait for workspace initialisation,
+    /// build the new EventWorkspace, swap, and return it.
+    std::shared_ptr<API::Workspace> doExtractData() override;
+
     /// Explicit, named state-transition hooks (objective 2).
     ///
-    /// onBeginRun() and onEndRun() are called exclusively from extractData()
+    /// onBeginRun() and onEndRun() are called exclusively from onBeforeExtract()
     /// (foreground thread) when a queued run-state transition is committed.
     ///
     /// onRunPause() is called exclusively from rxPacket(AnnotationPkt)
@@ -264,6 +283,7 @@ private:
 ```
 
 **Removed:** the single conflated `m_status` is split into
+
 - `m_adaraRunStatus` — what the DAS run state is right now, read by `runState()`;
 - `m_pendingTransition` — exactly one run-state edge waiting to be consumed by `extractData()`;
 - `m_lastTransition` — what the most recent `extractData()` consumed, read by `lastTransition()`.
@@ -274,7 +294,7 @@ private:
 background back-pressure), to keep the diff focused and the comments in
 `rxPacket(RunStatusPkt)` intelligible.
 
----
+______________________________________________________________________
 
 ## 5. Implementation
 
@@ -317,15 +337,15 @@ All four getters are `const` and have no side effects; none of them mutate
 In `rxPacket(const ADARA::RunStatusPkt &pkt)`, the only changes versus the
 current code are:
 
-* Replace assignments to `m_status` with assignments to `m_adaraRunStatus`.
-* On `NEW_RUN` with `m_workspaceInitialized == true`, queue
+- Replace assignments to `m_status` with assignments to `m_adaraRunStatus`.
+- On `NEW_RUN` with `m_workspaceInitialized == true`, queue
   `m_pendingTransition = BeginRun` and set `m_pauseNetRead = true` (unchanged).
-* On `NEW_RUN` with `m_workspaceInitialized == false`, keep the existing
+- On `NEW_RUN` with `m_workspaceInitialized == false`, keep the existing
   "little white lie" path: set `m_adaraRunStatus = Running`, call
   `setRunDetails(pkt)` directly, *do not* queue a transition, *do not* set
   `m_pauseNetRead`. The behavior and the long explanatory comment in the
   current `rxPacket(RunStatusPkt)` are preserved verbatim.
-* On `END_RUN`, queue `m_pendingTransition = EndRun`, set
+- On `END_RUN`, queue `m_pendingTransition = EndRun`, set
   `m_pauseNetRead = true`, set `m_adaraRunStatus = EndRun`, copy
   `setRunDetails(pkt)` if `!haveRunNumber` (unchanged).
 
@@ -359,6 +379,20 @@ relative to the DAS timeline. The pause/resume path does **not** use
 `m_pendingTransition` and does **not** set `m_pauseNetRead`.
 
 ### 5.3 `extractData()` — the only commit point
+
+> **Structural note.** The code below is presented as a single
+> `extractData()` body for clarity. In the final implementation it is
+> split across the `LiveListener::extractData()` template method (which
+> handles the `m_backgroundException` rethrow), `onBeforeExtract()`
+> (which contains Phase 1: dequeue / dispatch hook / set
+> `m_lastTransition`), and `doExtractData()` (which contains Phase 2 and
+> Phase 3: workspace-init wait + EventWorkspace build + swap). See
+> `plans/v3_subspecs/02b_extract_data_hook.md` for the template-method
+> contract and `plans/v3_subspecs/07_sns_commit_in_extract_data.md` for
+> the SNS-specific split. The exception-safety guarantees described
+> below survive the split unchanged: an `Exception::NotYet` thrown from
+> Phase 2 still leaves the Phase 1 side effects (including
+> `m_lastTransition`) intact.
 
 ```cpp
 std::shared_ptr<Workspace>
@@ -431,9 +465,9 @@ SNSLiveEventDataListener::extractData() {
 
 Important properties:
 
-* **Phase 1 runs once per call.** The pending transition is dequeued atomically;
+- **Phase 1 runs once per call.** The pending transition is dequeued atomically;
   no `m_transitionHandled` flag is needed.
-* **`m_lastTransition` is reset only when a new edge is being committed.** If
+- **`m_lastTransition` is reset only when a new edge is being committed.** If
   `pending` is `nullopt` (no new DAS edge since the previous call), the prior
   value of `m_lastTransition` is left in place. This is essential for
   `LoadLiveData`'s `Exception::NotYet` retry loop: the first `extractData()`
@@ -442,9 +476,9 @@ Important properties:
   `lastTransition() == BeginRun` so that `MonitorLiveData` can rename the
   workspace. Once a *new* edge arrives and is committed, the stale value is
   overwritten.
-* **Phase 1 holds the mutex only while reading the queue**, not while running
+- **Phase 1 holds the mutex only while reading the queue**, not while running
   the transition hook. Hooks may safely take the mutex themselves.
-* **Exception-safe.** Phase 2's `Exception::NotYet` is thrown *after* the
+- **Exception-safe.** Phase 2's `Exception::NotYet` is thrown *after* the
   transition is already committed and `m_lastTransition` recorded; if Phase 2
   throws, the next call sees no pending transition (correct: it was applied)
   and `m_lastTransition` retains its value (per bullet 2 above).
@@ -515,17 +549,17 @@ void SNSLiveEventDataListener::onRunPause(bool paused) {
 
 Notes:
 
-* The set of side effects in `onBeginRun()` / `onEndRun()` is identical to
+- The set of side effects in `onBeginRun()` / `onEndRun()` is identical to
   what the current `runStatus()` does (compare `SNSLiveEventDataListener.cpp:1495–1534`).
   Nothing new is cleared, nothing previously cleared is left dirty.
-* `onBeginRun()` and `onEndRun()` are `protected virtual` and dispatched only
+- `onBeginRun()` and `onEndRun()` are `protected virtual` and dispatched only
   from `extractData()`. Unit tests can subclass and override to assert the hooks
   fired with the expected preconditions.
-* `onRunPause()` is `protected virtual` and called only from
+- `onRunPause()` is `protected virtual` and called only from
   `rxPacket(AnnotationPkt)` in the background thread. Its dispatch point is
   different from `onBeginRun`/`onEndRun` by design (see §5.2 rationale). Unit
   tests can override it to observe pause/resume without a live ADARA stream.
-* The existing `m_runPaused` check in `rxPacket(BankedEventPkt)` is updated
+- The existing `m_runPaused` check in `rxPacket(BankedEventPkt)` is updated
   to reference `m_isDasPaused`; no other change to that function.
 
 ### 5.5 Background reader loop
@@ -551,7 +585,7 @@ No change versus today. The `m_pauseNetRead` back-pressure is released by
 `onBeginRun()` / `onEndRun()` inside `extractData()`, so stand-alone
 `LoadLiveData` no longer deadlocks.
 
----
+______________________________________________________________________
 
 ## 6. Backward Compatibility: deprecated `runStatus()`
 
@@ -591,7 +625,7 @@ forbid `runStatus()` (e.g. because callers should migrate) is free to
 override it as `[[noreturn]] throw std::logic_error(...)`; nothing in the
 v3 design relies on the default never throwing.
 
----
+______________________________________________________________________
 
 ## 7. Algorithm impact
 
@@ -635,7 +669,7 @@ explicit transition step driven from `extractData()`, with `runState()` made
 into a pure getter. The companion document specifies the per-listener
 treatment.
 
----
+______________________________________________________________________
 
 ## 8. Behaviour Preservation — does v3 conserve existing behaviour?
 
@@ -645,22 +679,22 @@ removal of the implicit `extractData()`-then-`runStatus()` ordering
 contract — and that difference is invisible because the only in-tree caller
 honoured the contract already.**
 
-| Behaviour                                                                            | Current code         | v3                                                                                     | Preserved? |
-| ------------------------------------------------------------------------------------ | -------------------- | -------------------------------------------------------------------------------------- | ---------- |
-| `runStatus()` returns `BeginRun` exactly once at the start of a run                  | yes, via mutation    | yes, via `lastTransition()` populated by `extractData()`                               | ✅ |
-| `runStatus()` returns `EndRun` exactly once at the end of a run                      | yes                  | yes                                                                                    | ✅ |
-| Workspace is re-initialised at run boundaries                                        | inside `runStatus()` | inside `onBeginRun()` / `onEndRun()`, called by `extractData()`                        | ✅ |
-| `m_dataStartTime` cleared on `EndRun` only, not on `BeginRun`                        | yes                  | yes (see §5.4)                                                                         | ✅ |
-| `m_instrumentXML`, `m_instrumentName`, `m_nameMap` cleared at both boundaries        | yes                  | yes                                                                                    | ✅ |
-| `m_deferredRunDetailsPkt` consumed at `BeginRun`                                     | yes                  | yes, inside `onBeginRun()`                                                             | ✅ |
-| `m_pauseNetRead` released after the boundary is consumed                             | inside `runStatus()` | inside `onBeginRun()` / `onEndRun()`                                                   | ✅ |
-| "Little white lie" path when `NEW_RUN` arrives before `m_workspaceInitialized`       | yes                  | yes — code in `rxPacket(RunStatusPkt)` is preserved verbatim                            | ✅ |
-| `m_runPaused` (`m_isDasPaused`) flips on `AnnotationPkt` MARKER_PAUSE / MARKER_RESUME | yes, inline     | yes, now routed through `onRunPause()` in background thread                            | ✅ |
-| Paused events discarded at the correct packet boundary                               | yes              | yes — `m_isDasPaused` flipped immediately in background thread, not deferred            | ✅ |
-| `isPaused()` query available without calling `runStatus()`                           | no               | yes (`isPaused()` is a `const` pure getter on `ILiveListener`)                         | 🔧 new |
-| `MonitorLiveData` workspace renaming triggers on `BeginRun`/`EndRun`                 | yes                  | yes (legacy `runStatus()` shim returns the edge)                                       | ✅ |
-| Stand-alone `LoadLiveData` produces a workspace                                      | **no** (deadlocks)   | yes (commit happens inside `extractData()`)                                            | 🔧 fixed |
-| Listener can be queried for its state without mutating it                            | **no**               | yes (`runState()`, `isPaused()`, `listenerState()`, `lastTransition()` all `const`)    | 🔧 fixed |
+| Behaviour                                                                             | Current code         | v3                                                                                  | Preserved? |
+| ------------------------------------------------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------- | ---------- |
+| `runStatus()` returns `BeginRun` exactly once at the start of a run                   | yes, via mutation    | yes, via `lastTransition()` populated by `extractData()`                            | ✅         |
+| `runStatus()` returns `EndRun` exactly once at the end of a run                       | yes                  | yes                                                                                 | ✅         |
+| Workspace is re-initialised at run boundaries                                         | inside `runStatus()` | inside `onBeginRun()` / `onEndRun()`, called by `extractData()`                     | ✅         |
+| `m_dataStartTime` cleared on `EndRun` only, not on `BeginRun`                         | yes                  | yes (see §5.4)                                                                      | ✅         |
+| `m_instrumentXML`, `m_instrumentName`, `m_nameMap` cleared at both boundaries         | yes                  | yes                                                                                 | ✅         |
+| `m_deferredRunDetailsPkt` consumed at `BeginRun`                                      | yes                  | yes, inside `onBeginRun()`                                                          | ✅         |
+| `m_pauseNetRead` released after the boundary is consumed                              | inside `runStatus()` | inside `onBeginRun()` / `onEndRun()`                                                | ✅         |
+| "Little white lie" path when `NEW_RUN` arrives before `m_workspaceInitialized`        | yes                  | yes — code in `rxPacket(RunStatusPkt)` is preserved verbatim                        | ✅         |
+| `m_runPaused` (`m_isDasPaused`) flips on `AnnotationPkt` MARKER_PAUSE / MARKER_RESUME | yes, inline          | yes, now routed through `onRunPause()` in background thread                         | ✅         |
+| Paused events discarded at the correct packet boundary                                | yes                  | yes — `m_isDasPaused` flipped immediately in background thread, not deferred        | ✅         |
+| `isPaused()` query available without calling `runStatus()`                            | no                   | yes (`isPaused()` is a `const` pure getter on `ILiveListener`)                      | 🔧 new     |
+| `MonitorLiveData` workspace renaming triggers on `BeginRun`/`EndRun`                  | yes                  | yes (legacy `runStatus()` shim returns the edge)                                    | ✅         |
+| Stand-alone `LoadLiveData` produces a workspace                                       | **no** (deadlocks)   | yes (commit happens inside `extractData()`)                                         | 🔧 fixed   |
+| Listener can be queried for its state without mutating it                             | **no**               | yes (`runState()`, `isPaused()`, `listenerState()`, `lastTransition()` all `const`) | 🔧 fixed   |
 
 There is **one behaviour that is intentionally not preserved**, and it is the
 bug the refactor exists to fix: stand-alone `LoadLiveData` previously
@@ -677,7 +711,7 @@ Two **subtleties to flag** in code review:
    retry, and `MonitorLiveData` still sees it. A caller that never calls
    `extractData()` never sees an edge (correct — no commit, no edge).
 
-2. **Pause/resume packets are processed in the background thread** via
+1. **Pause/resume packets are processed in the background thread** via
    `onRunPause()`, not at `extractData()` time. This is intentional: applying
    `m_isDasPaused` immediately at the annotation packet boundary gives
    accurate event filtering — events arriving between the `PAUSE` annotation
@@ -687,35 +721,36 @@ Two **subtleties to flag** in code review:
    override the pause/resume behaviour; the dispatch point (background thread)
    is noted clearly in its documentation.
 
----
+______________________________________________________________________
 
 ## 9. Files modified
 
-| File                                                                       | Change                                                                          |
-| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `Framework/API/inc/MantidAPI/ILiveListener.h`                              | Add `ListenerState` enum, `runState()`, `isPaused()`, `listenerState()`, `lastTransition()`; default-implement `runStatus()`; deprecate it. |
-| `Framework/API/src/ILiveListener.cpp` (new, if not present)                | Out-of-line default `runStatus()` implementation.                               |
-| `Framework/LiveData/inc/MantidLiveData/SNSLiveEventDataListener.h`         | Split `m_status` into `m_adaraRunStatus` / `m_pendingTransition` / `m_lastTransition`; rename `m_runPaused` → `m_isDasPaused`; declare `onBeginRun`, `onEndRun`, `onRunPause`; declare `runState()`, `isPaused()`, `listenerState()`, `lastTransition()`; change `std::mutex m_mutex` → `mutable std::mutex m_mutex` (the pure getters are `const` and lock the mutex). |
-| `Framework/LiveData/src/SNSLiveEventDataListener.cpp`                      | Implement getters; rewrite `extractData()` Phase 1; extract `onBeginRun`/`onEndRun` from current `runStatus()`; remove `runStatus()` override; route `AnnotationPkt` pause/resume through `onRunPause()`; rename `m_status → m_adaraRunStatus`, `m_runPaused → m_isDasPaused`; add `std::runtime_error` checks per §5.2 and §5.4. |
-| `Framework/LiveData/inc/MantidLiveData/FakeEventDataListener.h` + `.cpp`   | Override `runState()` (pure), `listenerState()`; move side effects out of `runStatus()` per `listener_refactoring_other_listeners.md`. |
-| `Framework/LiveData/inc/MantidLiveData/FileEventDataListener.h` + `.cpp`   | Override `runState()` (returns `Running`), `listenerState()`.                    |
-| `Framework/LiveData/Kafka/inc/MantidLiveData/Kafka/KafkaEventListener.h` + `.cpp` | Override `runState()` (queries decoder), `listenerState()`.                |
-| `Framework/LiveData/Kafka/inc/MantidLiveData/Kafka/KafkaHistoListener.h` + `.cpp` | Override `runState()`, `listenerState()`.                                    |
-| `Framework/LiveData/ISIS/inc/MantidLiveData/ISIS/ISISLiveEventDataListener.h` + `.cpp` | Override `runState()` (returns `Running`), `listenerState()`.          |
-| `Framework/LiveData/ISIS/inc/MantidLiveData/ISIS/ISISHistoDataListener.h` + `.cpp`     | Override `runState()` (returns `Running`), `listenerState()`.          |
-| `Framework/SINQ/inc/MantidSINQ/SINQHMListener.h` + `.cpp`                  | Override `runState()`, `listenerState()`.                                       |
-| `Framework/LiveData/test/TestGroupDataListener.h` + `.cpp`                 | Override `runState()` (returns `Running`), `listenerState()`.                    |
-| `Framework/LiveData/test/TestDataListener.h` + `.cpp`                      | Override `runState()`, `listenerState()`.                                       |
-| `Framework/API/test/LiveListenerTest.h` (`MockLiveListener`)               | Override `runState()`, `listenerState()`.                                       |
-| `Framework/LiveData/test/SNSLiveEventDataListenerTest.h`                   | New tests, §10.                                                                 |
-| `plans/listener_refactoring_other_listeners.md`                            | Companion doc: per-listener change instructions (rewritten for v3).             |
-| `docs/source/release/v6.x/Framework/LiveData/...`                          | Release note (bugfix: stand-alone LoadLiveData; new API: pure-getter state).    |
+| File                                                                                   | Change                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Framework/API/inc/MantidAPI/ILiveListener.h`                                          | Add `ListenerState` enum, `runState()`, `isPaused()`, `listenerState()`, `lastTransition()`; default-implement `runStatus()`; deprecate it.                                                                                                                                                                                                                                                                                      |
+| `Framework/API/src/ILiveListener.cpp` (new, if not present)                            | Out-of-line default `runStatus()` implementation.                                                                                                                                                                                                                                                                                                                                                                                |
+| `Framework/API/inc/MantidAPI/LiveListener.h` + `Framework/API/src/LiveListener.cpp`    | Finalise `extractData()` as a template method; add `protected: virtual void onBeforeExtract();` (default no-op) and `virtual std::shared_ptr<Workspace> doExtractData() = 0;`. Sub-spec 02b.                                                                                                                                                                                                                                     |
+| `Framework/LiveData/inc/MantidLiveData/SNSLiveEventDataListener.h`                     | Split `m_status` into `m_adaraRunStatus` / `m_pendingTransition` / `m_lastTransition`; rename `m_runPaused` → `m_isDasPaused`; declare `onBeginRun`, `onEndRun`, `onRunPause`; declare `runState()`, `isPaused()`, `listenerState()`, `lastTransition()`; change `std::mutex m_mutex` → `mutable std::mutex m_mutex` (the pure getters are `const` and lock the mutex).                                                          |
+| `Framework/LiveData/src/SNSLiveEventDataListener.cpp`                                  | Implement getters; implement `onBeforeExtract()` (Phase 1 of v3 §5.3) and rename `extractData()` body to `doExtractData()` (Phase 2/3 of v3 §5.3); extract `onBeginRun`/`onEndRun` from current `runStatus()`; remove `runStatus()` override; route `AnnotationPkt` pause/resume through `onRunPause()`; rename `m_status → m_adaraRunStatus`, `m_runPaused → m_isDasPaused`; add `std::runtime_error` checks per §5.2 and §5.4. |
+| `Framework/LiveData/inc/MantidLiveData/FakeEventDataListener.h` + `.cpp`               | Override `runState()` (pure), `listenerState()`; move side effects out of `runStatus()` per `listener_refactoring_other_listeners.md`.                                                                                                                                                                                                                                                                                           |
+| `Framework/LiveData/inc/MantidLiveData/FileEventDataListener.h` + `.cpp`               | Override `runState()` (returns `Running`), `listenerState()`.                                                                                                                                                                                                                                                                                                                                                                    |
+| `Framework/LiveData/Kafka/inc/MantidLiveData/Kafka/KafkaEventListener.h` + `.cpp`      | Override `runState()` (queries decoder), `listenerState()`.                                                                                                                                                                                                                                                                                                                                                                      |
+| `Framework/LiveData/Kafka/inc/MantidLiveData/Kafka/KafkaHistoListener.h` + `.cpp`      | Override `runState()`, `listenerState()`.                                                                                                                                                                                                                                                                                                                                                                                        |
+| `Framework/LiveData/ISIS/inc/MantidLiveData/ISIS/ISISLiveEventDataListener.h` + `.cpp` | Override `runState()` (returns `Running`), `listenerState()`.                                                                                                                                                                                                                                                                                                                                                                    |
+| `Framework/LiveData/ISIS/inc/MantidLiveData/ISIS/ISISHistoDataListener.h` + `.cpp`     | Override `runState()` (returns `Running`), `listenerState()`.                                                                                                                                                                                                                                                                                                                                                                    |
+| `Framework/SINQ/inc/MantidSINQ/SINQHMListener.h` + `.cpp`                              | Override `runState()`, `listenerState()`.                                                                                                                                                                                                                                                                                                                                                                                        |
+| `Framework/LiveData/test/TestGroupDataListener.h` + `.cpp`                             | Override `runState()` (returns `Running`), `listenerState()`.                                                                                                                                                                                                                                                                                                                                                                    |
+| `Framework/LiveData/test/TestDataListener.h` + `.cpp`                                  | Override `runState()`, `listenerState()`.                                                                                                                                                                                                                                                                                                                                                                                        |
+| `Framework/API/test/LiveListenerTest.h` (`MockLiveListener`)                           | Override `runState()`, `listenerState()`.                                                                                                                                                                                                                                                                                                                                                                                        |
+| `Framework/LiveData/test/SNSLiveEventDataListenerTest.h`                               | New tests, §10.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `plans/listener_refactoring_other_listeners.md`                                        | Companion doc: per-listener change instructions (rewritten for v3).                                                                                                                                                                                                                                                                                                                                                              |
+| `docs/source/release/v6.x/Framework/LiveData/...`                                      | Release note (bugfix: stand-alone LoadLiveData; new API: pure-getter state).                                                                                                                                                                                                                                                                                                                                                     |
 
 Approximate scope: ~15 source files touched (most are one-line additions),
 ~300 lines added in total, ~80 lines moved, ~30 lines deleted. The bulk of
 the new lines are in `SNSLiveEventDataListener.{h,cpp}` and the new tests.
 
----
+______________________________________________________________________
 
 ## 10. Testing
 
@@ -723,40 +758,40 @@ the new lines are in `SNSLiveEventDataListener.{h,cpp}` and the new tests.
 
 1. `test_runState_pure_getter_does_not_mutate` — call `runState()` 100×
    across each ADARA state; assert no internal field changes.
-2. `test_listenerState_reflects_connection_and_pause` — drive
+1. `test_listenerState_reflects_connection_and_pause` — drive
    connect/disconnect/pause via test fixture; assert each state is reachable.
-3. `test_lastTransition_reports_BeginRun_once` — inject `NEW_RUN` packet,
+1. `test_lastTransition_reports_BeginRun_once` — inject `NEW_RUN` packet,
    call `extractData()`, assert `lastTransition() == BeginRun`; call
    `extractData()` again with no new packet, assert `lastTransition() == nullopt`.
-4. `test_lastTransition_reports_EndRun_once` — symmetric.
-5. `test_extractData_commits_BeginRun_side_effects` — subclass overrides
+1. `test_lastTransition_reports_EndRun_once` — symmetric.
+1. `test_extractData_commits_BeginRun_side_effects` — subclass overrides
    `onBeginRun()` to record entry; inject `NEW_RUN`; call `extractData()`;
    assert hook fired exactly once, caches cleared, `m_pauseNetRead == false`,
    workspace re-initialised.
-6. `test_extractData_commits_EndRun_side_effects` — symmetric, plus
+1. `test_extractData_commits_EndRun_side_effects` — symmetric, plus
    `m_dataStartTime` cleared.
-7. `test_no_transition_no_hook` — inject normal event packets, call
+1. `test_no_transition_no_hook` — inject normal event packets, call
    `extractData()`, assert neither hook fires.
-8. `test_onRunPause_invoked_for_pause_resume_markers` — feed
+1. `test_onRunPause_invoked_for_pause_resume_markers` — feed
    `AnnotationPkt(PAUSE)` / `AnnotationPkt(RESUME)` directly; assert
    `m_isDasPaused` flips and `isPaused()` returns the correct value.
    Assert that `m_adaraRunStatus` is **not** modified by pause/resume.
-9. `test_isPaused_orthogonal_to_runState` — assert that `runState()`
+1. `test_isPaused_orthogonal_to_runState` — assert that `runState()`
    returns `Running` before and after a PAUSE annotation; only `isPaused()`
    changes.
-10. `test_legacy_runStatus_returns_edge_then_state` — the deprecated wrapper
-    must match the historical sequence: `BeginRun, Running, Running, ..., EndRun, NoRun`.
-11. `test_background_exception_propagates_from_all_getters` — set
-    `m_backgroundException`; assert `runState()`, `isPaused()`,
-    `listenerState()`, `lastTransition()`, `extractData()`, and
-    `runStatus()` all throw (where applicable).
+1. `test_legacy_runStatus_returns_edge_then_state` — the deprecated wrapper
+   must match the historical sequence: `BeginRun, Running, Running, ..., EndRun, NoRun`.
+1. `test_background_exception_propagates_from_all_getters` — set
+   `m_backgroundException`; assert `runState()`, `isPaused()`,
+   `listenerState()`, `lastTransition()`, `extractData()`, and
+   `runStatus()` all throw (where applicable).
 
 ### 10.2 Concurrency tests
 
 12. `test_concurrent_getters_no_data_race` — 4 reader threads spamming
     `runState()`/`isPaused()`/`listenerState()`/`lastTransition()` while the
     background thread injects packets; ThreadSanitizer clean.
-13. `test_pending_transition_queue_invariant_violation_throws` — using a
+01. `test_pending_transition_queue_invariant_violation_throws` — using a
     test fixture that injects packets directly into `rxPacket(RunStatusPkt)`
     (bypassing the background reader's `m_pauseNetRead` gate), call
     `rxPacket(NEW_RUN)` followed immediately by `rxPacket(END_RUN)` without
@@ -771,7 +806,7 @@ the new lines are in `SNSLiveEventDataListener.{h,cpp}` and the new tests.
     `LoadLiveData` with a fake SNS listener that simulates a `BeginRun`
     boundary; assert the algorithm completes within 5 s and produces a
     workspace. This is the regression test for the bug that motivated v3.
-15. `test_MonitorLiveData_workspace_renaming_unchanged` — drive a
+01. `test_MonitorLiveData_workspace_renaming_unchanged` — drive a
     `NoRun → BeginRun → Running → EndRun → NoRun` sequence; assert the
     output workspace is renamed with the correct suffix at each boundary.
     Uses the *unmodified* `MonitorLiveData` to prove backward compatibility.
@@ -779,9 +814,9 @@ the new lines are in `SNSLiveEventDataListener.{h,cpp}` and the new tests.
 ### 10.4 Documentation / clang-tidy / pre-commit
 
 16. `clang-tidy` on the modified files with the repo `.clang-tidy` config.
-17. `pre-commit run --files <modified files>`.
+01. `pre-commit run --files <modified files>`.
 
----
+______________________________________________________________________
 
 ## 11. Implementation Plan
 
@@ -790,7 +825,7 @@ the new lines are in `SNSLiveEventDataListener.{h,cpp}` and the new tests.
    add the trivial `listenerState()` overrides to every other listener and
    their mocks. No behavioural change yet. (1 day)
 
-2. **Split `m_status`.** Introduce `m_adaraRunStatus`, `m_pendingTransition`,
+1. **Split `m_status`.** Introduce `m_adaraRunStatus`, `m_pendingTransition`,
    `m_lastTransition`. Update `rxPacket(RunStatusPkt)` to write
    `m_adaraRunStatus` and queue into `m_pendingTransition` instead of
    touching `m_status`. Implement the three getters. Keep the existing
@@ -798,33 +833,33 @@ the new lines are in `SNSLiveEventDataListener.{h,cpp}` and the new tests.
    itself for now, identical to current code. All existing tests must still
    pass. (1–2 days)
 
-3. **Extract `onBeginRun`/`onEndRun`/`onRunPause`.** Move the side-effect
+1. **Extract `onBeginRun`/`onEndRun`/`onRunPause`.** Move the side-effect
    blocks out of `runStatus()` and the `AnnotationPkt` handler into the named
    hooks. Have the current `runStatus()` override call the hooks instead of
    inlining the work. Existing tests still pass. (1–2 days)
 
-4. **Move the commit to `extractData()`.** Add Phase 1 dispatching to the
+1. **Move the commit to `extractData()`.** Add Phase 1 dispatching to the
    hooks. Delete the `SNSLiveEventDataListener::runStatus()` override; fall
    through to the base-class default. Run the full SNS listener and
    `MonitorLiveData` integration tests. (1 day)
 
-5. **Stand-alone `LoadLiveData` regression test.** Add the test from §10.3.13;
+1. **Stand-alone `LoadLiveData` regression test.** Add the test from §10.3.13;
    confirm it passes without changes to `LoadLiveData`. (½ day)
 
-6. **Docs + release note.** (½ day)
+1. **Docs + release note.** (½ day)
 
 Total: 5–7 days, single PR practical.
 
----
+______________________________________________________________________
 
 ## 12. Summary
 
-* **Objective 1 — separate listener state and ADARA state.**
+- **Objective 1 — separate listener state and ADARA state.**
   `listenerState()` and `runState()` are independent pure getters.
-* **Objective 2 — explicit, named transition methods, no hidden side
+- **Objective 2 — explicit, named transition methods, no hidden side
   effects on reads.** All mutations live in `onBeginRun()`, `onEndRun()`,
   `onRunPause()`. All public reads are `const`.
-* **Objective 3 — commit the state machine inside `extractData()`.**
+- **Objective 3 — commit the state machine inside `extractData()`.**
   `extractData()` is the only place transitions fire. External callers do
   not orchestrate the FSM. `lastTransition()` is a memoised observation,
   not a control point — that is what makes (3) compatible with (1) and (2).
@@ -837,7 +872,7 @@ of caches cleared at each transition is exactly the current set, the
 `MonitorLiveData` runs unmodified against the deprecated `runStatus()`
 shim.
 
----
+______________________________________________________________________
 
 **Version**: 3.0
 **Date**: 2026-05-24
