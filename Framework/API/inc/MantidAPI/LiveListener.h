@@ -24,11 +24,15 @@ public:
    *
    *  Sealed (`final`) on `API::LiveListener` so that all subclasses share a
    *  common contract: any pre-extraction work belongs in `onBeforeExtract()`,
-   *  the actual workspace construction belongs in `doExtractData()`.
+   *  the actual workspace construction belongs in `doExtractData()`, and any
+   *  post-extraction work that must run only after a successful hand-off
+   *  belongs in `onAfterExtract()`.
    *
    *  Behaviour:
    *    1. `onBeforeExtract()` is invoked on the foreground thread.
-   *    2. `doExtractData()` is invoked and its return value propagated.
+   *    2. `doExtractData()` is invoked.
+   *    3. `onAfterExtract()` is invoked only if step 2 returned normally.
+   *    4. The workspace from step 2 is returned.
    *
    *  Exception safety:
    *    - If `onBeforeExtract()` throws, `doExtractData()` is NOT called and
@@ -36,6 +40,8 @@ public:
    *    - If `doExtractData()` throws (e.g. `Exception::NotYet`) the side
    *      effects performed by `onBeforeExtract()` are preserved — required
    *      by the v3 §5.3 retry-loop contract.
+   *    - If `onAfterExtract()` throws, the exception propagates and the
+   *      workspace returned by `doExtractData()` is discarded during unwind.
    *
    *  Listeners that derive directly from `ILiveListener` (not from
    *  `LiveListener`) must continue to override `extractData()` themselves.
@@ -55,6 +61,12 @@ protected:
    *  overrode as `extractData()`.
    */
   virtual std::shared_ptr<Workspace> doExtractData() = 0;
+
+  /** Hook invoked by `extractData()` immediately after `doExtractData()`
+   *  returns successfully. Default is a no-op. This hook is not called when
+   *  `doExtractData()` throws.
+   */
+  virtual void onAfterExtract();
 
   /// Indicates receipt of a reset signal from the DAS.
   bool m_dataReset = false;

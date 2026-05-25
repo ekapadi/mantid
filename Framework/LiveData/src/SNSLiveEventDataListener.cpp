@@ -1462,10 +1462,6 @@ std::shared_ptr<Workspace> SNSLiveEventDataListener::doExtractData() {
     std::swap(m_eventBuffer, temp);
   } // mutex automatically unlocks here
 
-  // Signal that this call succeeded so onBeforeExtract() clears m_lastTransition
-  // on the next extractData() call (see C1 fix comment in onBeforeExtract()).
-  m_lastExtractSucceeded = true;
-
   return temp;
 }
 
@@ -1508,17 +1504,6 @@ std::optional<ILiveListener::RunStatus> SNSLiveEventDataListener::lastTransition
 // ---------------------------------------------------------------------------
 
 void SNSLiveEventDataListener::onBeforeExtract() {
-  // C1 fix: clear m_lastTransition only when the PREVIOUS doExtractData() call
-  // succeeded (returned a workspace).  If it threw NotYet, m_lastTransition is
-  // preserved so the retry loop still sees the edge across multiple invocations.
-  // Once success is confirmed we clear the flag and the stale edge together;
-  // this prevents MonitorLiveData from re-processing the same edge on the next tick.
-  if (m_lastExtractSucceeded) {
-    std::lock_guard<std::mutex> scopedLock(m_mutex);
-    m_lastTransition.reset();
-    m_lastExtractSucceeded = false;
-  }
-
   // Dequeue the pending transition atomically.
   std::optional<RunStatus> pending;
   {
@@ -1545,6 +1530,18 @@ void SNSLiveEventDataListener::onBeforeExtract() {
   // Release the background reader (was blocked by m_pauseNetRead since the
   // transition was queued).
   m_pauseNetRead = false;
+}
+
+void SNSLiveEventDataListener::onAfterExtract() {
+  // The template method only calls us when doExtractData() returned a
+  // workspace without throwing. At this point the caller has the committed
+  // transition in hand (either via the workspace contents or via a subsequent
+  // lastTransition() query), so the edge has been delivered and may be
+  // cleared. If doExtractData() had thrown Exception::NotYet, we would not be
+  // here, and m_lastTransition would remain intact for the LoadLiveData retry
+  // loop (C1 fix).
+  std::lock_guard<std::mutex> scopedLock(m_mutex);
+  m_lastTransition.reset();
 }
 
 // ---------------------------------------------------------------------------

@@ -10,17 +10,22 @@
 namespace Mantid::API {
 
 /** Template-method body. See header for the full contract.
- *  `onBeforeExtract()` runs first; if it throws, `doExtractData()` is
- *  skipped. Any side effects performed by `onBeforeExtract()` are kept
- *  even if `doExtractData()` subsequently throws.
+ *  `onBeforeExtract()` runs first; if it throws, `doExtractData()` and
+ *  `onAfterExtract()` are skipped. `onAfterExtract()` runs only after
+ *  `doExtractData()` returns successfully.
  */
 std::shared_ptr<Workspace> LiveListener::extractData() {
   onBeforeExtract();
-  return doExtractData();
+  auto ws = doExtractData();
+  onAfterExtract();
+  return ws;
 }
 
 /// Default no-op hook; subclasses override to perform per-extract work.
 void LiveListener::onBeforeExtract() {}
+
+/// Default no-op hook; subclasses override for post-success work.
+void LiveListener::onAfterExtract() {}
 
 /// @copydoc ILiveListener::dataReset
 bool LiveListener::dataReset() {

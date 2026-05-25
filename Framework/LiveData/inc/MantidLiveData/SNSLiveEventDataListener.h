@@ -61,6 +61,10 @@ protected:
   /// or onEndRun() as appropriate.
   void onBeforeExtract() override;
 
+  /// Called from LiveListener::extractData() only after doExtractData()
+  /// returned successfully. Clears the committed transition edge.
+  void onAfterExtract() override;
+
   /// Called from onBeforeExtract() when a BeginRun transition is dequeued.
   /// Acquires m_mutex itself.  Resets workspace-initialisation state and applies
   /// run details from the deferred RunStatusPkt.  Throws std::runtime_error if
@@ -228,12 +232,10 @@ protected:
   ILiveListener::RunStatus m_adaraRunStatus{RunStatus::NoRun};
   std::optional<RunStatus> m_pendingTransition;
   std::optional<RunStatus> m_lastTransition;
-  /// Cleared in onBeforeExtract() only when the previous doExtractData() call
-  /// succeeded (i.e., returned a workspace without throwing).  Allows
-  /// m_lastTransition to persist across NotYet retries (C1 fix) while still
-  /// clearing it once the transition has been successfully delivered to the
-  /// caller (so MonitorLiveData does not re-process the edge on the next tick).
-  bool m_lastExtractSucceeded{false};
+  /// Cleared in onAfterExtract() only after doExtractData() returned a
+  /// workspace without throwing. This allows m_lastTransition to persist across
+  /// NotYet retries (C1 fix) while still clearing it after successful delivery
+  /// to the caller (so MonitorLiveData does not re-process the edge).
 
   bool m_workspaceInitialized{false};
 
