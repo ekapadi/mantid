@@ -1,10 +1,53 @@
 # SNSLiveEventDataListener — UDS Integration Test Spec
 
+> **This file is the historical monolith. It has been superseded by the
+> sub-specs in this directory. The authoritative, up-to-date specification
+> is in the following files:**
+>
+> | Sub-spec                                       | File                                                         |
+> | ---------------------------------------------- | ------------------------------------------------------------ |
+> | Master index + §0 agent instructions + CMake   | [`00-index.md`](00-index.md)                                 |
+> | §3 UDS transport (corrected socket API)        | [`01-uds-transport.md`](01-uds-transport.md)                 |
+> | §4 MockSMSServer API + threading               | [`02-mock-sms-server.md`](02-mock-sms-server.md)             |
+> | §4.3 ADARA packet fixture reuse rules          | [`03-adara-packet-fixtures.md`](03-adara-packet-fixtures.md) |
+> | §5 fixture skeleton + §6 all 22 test scenarios | [`04-test-scenarios.md`](04-test-scenarios.md)               |
+>
+> **Key corrections applied in the sub-specs (not in this file):**
+>
+> 1. **UDS socket**: The `"unix:path"` config-string syntax used in this file
+>    is **invalid** Poco. The correct API is
+>    `Poco::Net::SocketAddress(Poco::Net::AddressFamily::UNIX_LOCAL, path)`.
+>    See [`01-uds-transport.md §3.4`](01-uds-transport.md).
+>
+> 1. **ADARA packet builders**: Every packet type required by the integration
+>    scenarios has an existing fixture in `ADARAPackets.h`. Builders
+>    `#include "ADARAPackets.h"` and patch fields in fixture copies; they do
+>    not hand-roll byte layouts from scratch.
+>    See [`03-adara-packet-fixtures.md`](03-adara-packet-fixtures.md).
+>
+> 1. **Test scenarios**: Each test in the sub-spec has explicit step-by-step
+>    script, steps, and assertions — no bare line-number references.
+>    See [`04-test-scenarios.md`](04-test-scenarios.md).
+>
+> 1. **XFAIL tests**: The two §6.8 tests are marked XFAIL with inverted
+>    assertions that document the `m_ignorePackets` latent defect.
+>    See [`04-test-scenarios.md §6.8`](04-test-scenarios.md) and
+>    [`plans/ignore-packets-defect.md`](../ignore-packets-defect.md).
+>
+> 1. **Integration test discipline**: This suite drives the *real*
+>    `SNSLiveEventDataListener`. Do **not** use `TestableSNSListener`.
+>    See [`00-index.md §0 item 9`](00-index.md).
+>
+> The body of this file is retained for historical context only.
+> Do not implement from this file — use the sub-specs above.
+
+______________________________________________________________________
+
 **Branch:** `EWM15431_live-listener-interface`
 **Scope:** `Framework/LiveData/test/` and `Framework/LiveData/CMakeLists.txt` only.
-**Status:** Implementation-ready.
+**Status:** Superseded — see sub-specs above.
 
----
+______________________________________________________________________
 
 ## 0. Agent execution instructions
 
@@ -12,13 +55,16 @@ Read this section first; it constrains *how* the spec is to be implemented.
 
 1. **Base branch.** Base the PR on `EWM15431_live-listener-interface`. Do **not**
    base on `main` / `master`.
-2. **Scope fence.** Touch only the files explicitly named in §2, §4, and §7.
+
+1. **Scope fence.** Touch only the files explicitly named in §2, §4, and §7.
    Do **not** modify any file under `Framework/LiveData/src/` or
    `Framework/LiveData/inc/`. Do not "fix" comments, reformat headers, or
    touch unrelated tests.
-3. **Static verification only — DO NOT build, DO NOT run tests.** A full
+
+1. **Static verification only — DO NOT build, DO NOT run tests.** A full
    Mantid build takes hours and you cannot launch the test binary in the
    correct environment. Verify your changes by:
+
    - reading the relevant production code on this branch;
    - cross-referencing against the line ranges cited in §1 and §6;
    - checking that file names, `#include`s, `namespace` usages, and CMake
@@ -29,21 +75,26 @@ Read this section first; it constrains *how* the spec is to be implemented.
    as part of PR review. Anywhere this spec mentions `cmake`, `ctest`,
    compiler output, or test pass/fail status, that instruction is for the
    *reviewer* — **not** for you.
-4. **No build artefacts in the PR.** Do not commit `build/`, `CMakeFiles/`,
+
+1. **No build artefacts in the PR.** Do not commit `build/`, `CMakeFiles/`,
    generated headers, or compiler output.
-5. **Legacy file.** The current `SNSLiveEventDataListenerTest.h` is renamed
+
+1. **Legacy file.** The current `SNSLiveEventDataListenerTest.h` is renamed
    and **retained** as historical reference. It must remain in the tree but
    must **not** appear in `TEST_FILES`. Do not delete it.
-6. **Ambiguity protocol.** If the spec is wrong, contradictory, or
+
+1. **Ambiguity protocol.** If the spec is wrong, contradictory, or
    under-specified, **stop** and surface the question in the PR description.
    Do not invent a resolution silently.
-7. **Flake check (§9 item 8).** Skip unless explicitly requested. It is a
+
+1. **Flake check (§9 item 8).** Skip unless explicitly requested. It is a
    manual operator check, not a gating CI step.
-8. **No production code changes.** If you believe production code must
+
+1. **No production code changes.** If you believe production code must
    change for a test to pass, you have misread either the spec or the
    production contract — stop and ask.
 
----
+______________________________________________________________________
 
 ## 1. Goal
 
@@ -70,20 +121,20 @@ No production code is modified. The listener already accepts a UDS
 `Poco::Net::SocketAddress`; see `connect()` at
 `SNSLiveEventDataListener.cpp:141-156`.
 
----
+______________________________________________________________________
 
 ## 2. File rearrangement
 
-| Action | Path | Notes |
-|---|---|---|
-| Rename | `Framework/LiveData/test/SNSLiveEventDataListenerTest.h` → `Framework/LiveData/test/SNSLiveEventDataListenerLegacyTest.h` | Retained as historical reference. **Not** registered in `TEST_FILES`. Add a one-line header comment: *"Legacy network-dependent test, retained for reference only; superseded by `SNSLiveEventDataListenerTest.h` (integration) and `SNSLiveEventDataListenerNoNetworkTest.h` (unit)."* |
-| Create | `Framework/LiveData/test/SNSLiveEventDataListenerTest.h` | New UDS-driven integration suite. File-level Doxygen header **must** state: *"INTEGRATION TEST. Drives a real `SNSLiveEventDataListener` against an in-process `MockSMSServer` over a Unix-domain socket. Does NOT require SMS or any external network resource. Linux/macOS only — compiles to an empty suite on Windows."* |
-| Create | `Framework/LiveData/test/MockSMSServer.h` | Declaration of `MockSMSServer` and the `ScriptEntry` variant. |
-| Create | `Framework/LiveData/test/MockSMSServer.cpp` | Implementation (Poco socket plumbing, packet builders, script driver). |
+| Action | Path                                                                                                                      | Notes                                                                                                                                                                                                                                                                                                                        |
+| ------ | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rename | `Framework/LiveData/test/SNSLiveEventDataListenerTest.h` → `Framework/LiveData/test/SNSLiveEventDataListenerLegacyTest.h` | Retained as historical reference. **Not** registered in `TEST_FILES`. Add a one-line header comment: *"Legacy network-dependent test, retained for reference only; superseded by `SNSLiveEventDataListenerTest.h` (integration) and `SNSLiveEventDataListenerNoNetworkTest.h` (unit)."*                                      |
+| Create | `Framework/LiveData/test/SNSLiveEventDataListenerTest.h`                                                                  | New UDS-driven integration suite. File-level Doxygen header **must** state: *"INTEGRATION TEST. Drives a real `SNSLiveEventDataListener` against an in-process `MockSMSServer` over a Unix-domain socket. Does NOT require SMS or any external network resource. Linux/macOS only — compiles to an empty suite on Windows."* |
+| Create | `Framework/LiveData/test/MockSMSServer.h`                                                                                 | Declaration of `MockSMSServer` and the `ScriptEntry` variant.                                                                                                                                                                                                                                                                |
+| Create | `Framework/LiveData/test/MockSMSServer.cpp`                                                                               | Implementation (Poco socket plumbing, packet builders, script driver).                                                                                                                                                                                                                                                       |
 
 Keep the existing `SNSLiveEventDataListenerNoNetworkTest.h` unchanged.
 
----
+______________________________________________________________________
 
 ## 3. Transport: Unix-domain socket
 
@@ -100,8 +151,7 @@ Keep the existing `SNSLiveEventDataListenerNoNetworkTest.h` unchanged.
 
 ### 3.2 Platform guard
 
-Wrap the entire body of `SNSLiveEventDataListenerTest.h` (after the `#pragma
-once`) and the body of `MockSMSServer.{h,cpp}` in:
+Wrap the entire body of `SNSLiveEventDataListenerTest.h` (after the `#pragma once`) and the body of `MockSMSServer.{h,cpp}` in:
 
 ```cpp
 #ifndef _WIN32
@@ -142,7 +192,7 @@ if (m_sockPath.size() >= 100) {
 The `TemporaryFile` is created but the file is `remove()`d **before** the
 server binds, because `bind()` requires the path to not exist.
 
----
+______________________________________________________________________
 
 ## 4. `MockSMSServer` — header + implementation
 
@@ -238,19 +288,19 @@ Provide non-member helpers in the `Testing` namespace that return
 wrappers around the binary exemplars in
 `Framework/LiveData/test/ADARAPackets.h` with patchable fields:
 
-| Helper | Mutates | Notes |
-|---|---|---|
-| `buildGeometryPkt(const std::string& xml)` | XML payload + length | Used to inject minimal valid instrument geometry. |
-| `buildBeamlineInfoPkt(const std::string& longName)` | long name | |
-| `buildRunStatusPkt(ADARA::RunStatus::Enum, uint32_t runNumber, uint64_t pulseId)` | status, run number, pulse id | NEW_RUN / END_RUN / STATE. |
-| `buildRunInfoPkt(const std::string& proposalId, const std::string& title)` | XML payload | |
-| `buildBankedEventPkt(uint64_t pulseId, double pulseChargePc, std::span<const PixelTof>)` | pulse id, charge, events | |
-| `buildBeamMonitorPkt(uint64_t pulseId, uint32_t monitorId, std::span<const uint32_t> tofs)` | | |
-| `buildAnnotationPkt(ADARA::MarkerType, uint32_t scanIndex, const std::string& comment)` | | PAUSE / RESUME / SCAN_START / SCAN_STOP. |
-| `buildDeviceDescriptorPkt(uint32_t devId, std::span<const PVDesc>)` | XML | |
-| `buildVariableU32Pkt(uint32_t devId, uint32_t pvId, uint32_t value, uint64_t pulseId)` | | |
-| `buildVariableDoublePkt(...)` | | |
-| `buildHeartbeatPkt(uint64_t pulseId)` | timestamp | |
+| Helper                                                                                      | Mutates                      | Notes                                             |
+| ------------------------------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------- |
+| `buildGeometryPkt(const std::string& xml)`                                                  | XML payload + length         | Used to inject minimal valid instrument geometry. |
+| `buildBeamlineInfoPkt(const std::string& longName)`                                         | long name                    |                                                   |
+| `buildRunStatusPkt(ADARA::RunStatus::Enum, uint32_t runNumber, uint64_t pulseId)`           | status, run number, pulse id | NEW_RUN / END_RUN / STATE.                        |
+| `buildRunInfoPkt(const std::string& proposalId, const std::string& title)`                  | XML payload                  |                                                   |
+| `buildBankedEventPkt(uint64_t pulseId, double pulseChargePc, std::span<const PixelTof>)`    | pulse id, charge, events     |                                                   |
+| `buildBeamMonitorPkt(uint64_t pulseId, uint32_t monitorId, std::span<const uint32_t> tofs)` |                              |                                                   |
+| `buildAnnotationPkt(ADARA::MarkerType, uint32_t scanIndex, const std::string& comment)`     |                              | PAUSE / RESUME / SCAN_START / SCAN_STOP.          |
+| `buildDeviceDescriptorPkt(uint32_t devId, std::span<const PVDesc>)`                         | XML                          |                                                   |
+| `buildVariableU32Pkt(uint32_t devId, uint32_t pvId, uint32_t value, uint64_t pulseId)`      |                              |                                                   |
+| `buildVariableDoublePkt(...)`                                                               |                              |                                                   |
+| `buildHeartbeatPkt(uint64_t pulseId)`                                                       | timestamp                    |                                                   |
 
 Each builder asserts at construction that the produced payload length field
 matches the actual byte count.
@@ -258,6 +308,7 @@ matches the actual byte count.
 ### 4.4 Driving modes
 
 The server thread iterates the script. For each entry:
+
 - `std::vector<uint8_t>` → `m_clientSocket.sendBytes(...)`.
 - `PktGarbage` → send arbitrary bytes (used to verify
   `ADARA::invalid_packet` propagation, §6.9).
@@ -269,13 +320,13 @@ No `Poco::Thread::sleep` between entries by default. Inter-entry delays, if
 ever needed, can be expressed as a separate `PktDelay{ms}` entry — left
 out of v1 to keep the surface minimal.
 
----
+______________________________________________________________________
 
 ## 5. Test fixture
 
 ### 5.1 Hang protection — four layers
 
-> **Notes for reviewer:** *[ agent should not run `ctest`! ]*
+> **Notes for reviewer:** *\[ agent should not run `ctest`! \]*
 > This section describes the runtime behaviour the maintainer will observe
 > when invoking `ctest` during PR review. The coding agent does not run
 > the suite — its job is to write the four protection layers, not to
@@ -288,18 +339,18 @@ Defence in depth:
    `Poco::Thread::sleep` in the legacy assertions. On timeout it calls
    `TS_FAIL` with a descriptive message and returns false (so the calling
    test can attempt cleanup).
-2. **`extractWithTimeout(listener, timeout = 10s)`** — wraps
+1. **`extractWithTimeout(listener, timeout = 10s)`** — wraps
    `listener.extractData()` in `std::async(std::launch::async, ...)` and
    `std::future::wait_for`. On timeout it `TS_FAIL`s and returns
    `nullptr`. This protects against the worst-case regression: a deadlock
    in `onBeforeExtract` / `onBeginRun` / `onEndRun` due to a mutex bug
    would otherwise wedge the foreground thread forever.
-3. **`MockSMSServer` self-watchdog (§4.1)** — if the script is not
+1. **`MockSMSServer` self-watchdog (§4.1)** — if the script is not
    exhausted within `setWatchdog()` (default 30 s), the server closes its
    client socket. The listener will then observe EOF from its
    `m_socket.receiveBytes` call and surface the failure through its
    normal exception path (`SNSLiveEventDataListener.cpp:274-278, 336-342`).
-4. **`TestWatchdog` RAII helper** — constructed at the top of every test
+1. **`TestWatchdog` RAII helper** — constructed at the top of every test
    that drives the listener; arms a background thread that, if not
    disarmed within 60 s, calls `g_log.fatal` and `std::abort()`. A clean
    crash of the test binary is strictly preferable to wedging `ctest` on
@@ -307,11 +358,11 @@ Defence in depth:
    `tearDown`.
 
 These limits are deliberately loose (5 / 10 / 30 / 60 s) — they exist to
-catch *bugs*, not to enforce performance. Healthy tests complete in <1 s.
+catch *bugs*, not to enforce performance. Healthy tests complete in \<1 s.
 
 ### 5.2 Suite-wide ctest timeout
 
-> **Notes for reviewer:** *[ agent should not run `ctest`! ]*
+> **Notes for reviewer:** *\[ agent should not run `ctest`! \]*
 > The `set_tests_properties(... TIMEOUT 120)` CMake edit *is* part of the
 > agent's deliverable (see §7). What this section describes — the
 > behaviour of `ctest` itself enforcing the 120 s ceiling — is observable
@@ -398,7 +449,7 @@ Notes:
   the listener (which sets `m_stopThread` and joins) before destroying
   the server (which would close the socket out from under it).
 
----
+______________________________________________________________________
 
 ## 6. Test catalogue
 
@@ -510,7 +561,7 @@ Covers `SNSLiveEventDataListener.cpp:465-525, 1345-1362`.
 - `test_invalidMonitorId_logsOnceAndContinues` — verifies the
   `m_badMonitors` dedup at `SNSLiveEventDataListener.cpp:515-519`.
 
----
+______________________________________________________________________
 
 ## 7. CMake registration
 
@@ -544,7 +595,7 @@ set_tests_properties(LiveDataTest_SNSLiveEventDataListenerTest
                      PROPERTIES TIMEOUT 120)
 ```
 
----
+______________________________________________________________________
 
 ## 8. Out of scope
 
@@ -558,7 +609,7 @@ set_tests_properties(LiveDataTest_SNSLiveEventDataListenerTest
 - **No `m_deferredRunDetailsPkt` invariant test** in the integration
   suite — covered by the no-network unit suite (§6.6).
 
----
+______________________________________________________________________
 
 ## 9. Definition of done
 
@@ -567,19 +618,19 @@ inspection of the PR.
 
 1. `SNSLiveEventDataListenerLegacyTest.h` exists, is not registered, and
    contains the required header comment.
-2. `SNSLiveEventDataListenerTest.h`, `MockSMSServer.h`,
+1. `SNSLiveEventDataListenerTest.h`, `MockSMSServer.h`,
    `MockSMSServer.cpp` exist with the contents described in §3–§6.
-3. `Framework/LiveData/CMakeLists.txt` registers
+1. `Framework/LiveData/CMakeLists.txt` registers
    `SNSLiveEventDataListenerTest.h` in `TEST_FILES` and **not**
    `SNSLiveEventDataListenerLegacyTest.h`.
-4. `Framework/LiveData/test/CMakeLists.txt` lists `MockSMSServer.cpp` in
+1. `Framework/LiveData/test/CMakeLists.txt` lists `MockSMSServer.cpp` in
    `TESTHELPER_SRCS` and sets the `TIMEOUT 120` property.
-7. No file under `Framework/LiveData/src/` or
+1. No file under `Framework/LiveData/src/` or
    `Framework/LiveData/inc/` is modified by the PR.
 
----
+______________________________________________________________________
 
-> **Notes for reviewer:** *[ agent should not run `ctest`! ]*
+> **Notes for reviewer:** *\[ agent should not run `ctest`! \]*
 > Items 5, 6, and 8 below are runtime-verifiable only, by the maintainer,
 > after a local build. The coding agent has been explicitly instructed
 > (§0 item 3) **not** to build or run tests. Do not interpret the absence
@@ -588,10 +639,10 @@ inspection of the PR.
 
 5. *(Reviewer-verified.)* On Linux/macOS, all 22 tests pass under
    `ctest -R LiveDataTest`.
-6. *(Reviewer-verified.)* On Windows, the suite compiles cleanly to an
+1. *(Reviewer-verified.)* On Windows, the suite compiles cleanly to an
    empty `CxxTest::TestSuite` and `ctest -R LiveDataTest` passes (no SNS
    tests registered).
-8. *(Reviewer-only, optional, not CI-gated.)* A deliberate-deadlock
+1. *(Reviewer-only, optional, not CI-gated.)* A deliberate-deadlock
    injection check — temporarily insert a
    `std::this_thread::sleep_for(std::chrono::hours{1})` in
    `onBeforeExtract` — must cause the affected test to fail-fast via
@@ -599,7 +650,7 @@ inspection of the PR.
    commit. Operator-run only; **never** to be performed by the coding
    agent.
 
----
+______________________________________________________________________
 
 ## 10. References
 
@@ -615,13 +666,13 @@ Existing test files:
 - [`Framework/LiveData/test/ADARAPackets.h`](../../Framework/LiveData/test/ADARAPackets.h)
   — binary exemplars for the §4.3 builders.
 - [`Framework/LiveData/test/KafkaTesting.h`](../../Framework/LiveData/test/KafkaTesting.h)
-  + `TestDataListener.cpp` — the `TESTHELPER_SRCS` precedent.
+  - `TestDataListener.cpp` — the `TESTHELPER_SRCS` precedent.
 
 Config / tempfile precedent:
 
 - [`Framework/Kernel/test/ConfigObserverTest.h`](../../Framework/Kernel/test/ConfigObserverTest.h)
-  + `ConfigPropertyObserverTest.h` — save / restore config in
-  `setUp` / `tearDown`.
+  - `ConfigPropertyObserverTest.h` — save / restore config in
+    `setUp` / `tearDown`.
 - `Poco::TemporaryFile` usage across `Framework/*` — see `SaveGSSTest.h`,
   `SaveGDATest.h`, `SaveOpenGenieAsciiTest.h`, `DownloadFileTest.h`,
   `InternetHelperTest.h`, `InternetHelper::downloadFile`,
