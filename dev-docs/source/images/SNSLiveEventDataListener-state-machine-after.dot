@@ -58,7 +58,7 @@ digraph SNSLiveEventDataListener_after {
     // The pause-gate release (m_pauseNetRead=false) is shown on the exit
     // edges below, not inside this cluster label.
     subgraph cluster_committed_extractdata {
-        label    = "committed inside extractData()\n-> onBeforeExtract() -> onBeginRun() / onEndRun()\n* [BeginRun] consume m_deferredRunDetailsPkt\n* clear m_instrumentXML, m_instrumentName, m_nameMap\n* initWorkspacePart1()\n* advance m_adaraRunStatus  (BeginRun->Running  or  EndRun->NoRun)"
+        label    = "committed inside extractData() → onBeginRun() / onEndRun()\n* [BeginRun] consume m_deferredRunDetailsPkt\n* clear m_instrumentXML, m_instrumentName, m_nameMap\n* initWorkspacePart1()\n* m_adaraRunStatus: BeginRun->Running  or  EndRun->NoRun\n* m_pauseNetRead = false   <- pause-gate released"
         style    = "dashed"
         color    = "darkgreen"
         fontname = "Helvetica"
@@ -86,12 +86,12 @@ digraph SNSLiveEventDataListener_after {
     // The pause-gate release (m_pauseNetRead=false) appears here on the
     // exit edge rather than inside the cluster label.
     BeginRun -> Running [
-        label    = "onBeginRun(): m_adaraRunStatus = Running\nm_pendingTransition consumed\nm_pauseNetRead = false  [pause-gate released]"
+        label    = "onBeginRun():\nm_adaraRunStatus = Running"
         color    = "darkgreen"
         penwidth = 2
     ]
     EndRun -> NoRun [
-        label    = "onEndRun(): m_adaraRunStatus = NoRun\nm_pendingTransition consumed\nm_pauseNetRead = false  [pause-gate released]"
+        label    = "onEndRun():\nm_adaraRunStatus = NoRun"
         color    = "darkgreen"
         penwidth = 2
     ]
