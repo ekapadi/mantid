@@ -1,52 +1,8 @@
 name: Update pixi lockfiles
-
-permissions:
-  contents: write
-  pull-requests: write
-
 on:
   workflow_dispatch:
-  schedule:
-    - cron: 0 6 * * *
-
-env:
-  # change this between main and release-next
-  UPDATE_BRANCH: main
-
 jobs:
-  pixi-update-lockfile:
-    if: ${{ github.repository_owner == 'mantidproject' }}
+  no-op:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ env.UPDATE_BRANCH }}  # start from this branch
-      - name: Read pixi version
-        id: pixi-version
-        run: echo "version=$(cat .pixi-version)" >> "$GITHUB_OUTPUT"
-      - name: Set up pixi
-        uses: prefix-dev/setup-pixi@v0.9.5
-        with:
-          pixi-version: v${{ steps.pixi-version.outputs.version }}
-          run-install: false
-      - name: Update lockfiles
-        run: |
-          set -o pipefail
-          pixi update --json | pixi exec pixi-diff-to-markdown >> diff.md
-      - name: Create pull request
-        uses: peter-evans/create-pull-request@v8
-        with:
-          token: ${{ secrets.MANTID_BUILDER_TOKEN }}
-          author: mantid-builder <mantid-builder@users.noreply.github.com>
-          committer: mantid-builder <mantid-builder@users.noreply.github.com>
-          commit-message: Update pixi lockfile
-          title: Update pixi lockfile
-          body-path: diff.md
-          branch: update-pixi
-          base:  ${{ env.UPDATE_BRANCH }}  # merge into this branch
-          labels: |
-            pixi
-            Maintenance
-            DevOps
-          delete-branch: true
-          add-paths: pixi.lock
+      - run: echo "disabled in fork"
