@@ -1,6 +1,6 @@
 # SNSLiveEventDataListener — UDS Integration Test: Overview
 
-**Branch:** `EWM15431_live-listener-interface`
+**Branch:** `EWM15431_live-listener-interface__agents`
 **Scope:** `Framework/LiveData/test/` and `Framework/LiveData/CMakeLists.txt` only.
 **Status:** Implementation-ready, broken out into a sequence of single-commit
 implementation sub-specs (`subspec01-…` through `subspec06-…`).
@@ -20,7 +20,7 @@ Read this section first; it constrains *how* every sub-spec is to be
 implemented. **These restrictions are restated at the top of every
 implementation sub-spec — they apply to every commit.**
 
-1. **Base branch.** Base the PR on `EWM15431_live-listener-interface`. Do
+1. **Base branch.** Base the PR on `EWM15431_live-listener-interface__agents`. Do
    **not** base on `main` / `master`.
 
 2. **Scope fence.** Touch only the files explicitly named in §2 below, in
@@ -252,7 +252,7 @@ inspection of the PR.
 
 ## 7. References
 
-Production code (this branch, `EWM15431_live-listener-interface`):
+Production code (this branch, `EWM15431_live-listener-interface__agents`):
 
 - [`Framework/LiveData/src/SNSLiveEventDataListener.cpp`](../../../Framework/LiveData/src/SNSLiveEventDataListener.cpp)
   — see line ranges cited in §1 and in each sub-spec's test descriptions.

@@ -9,7 +9,7 @@ name out of the way without breaking the existing build.
 
 ## 0. Agent execution instructions (must obey)
 
-1. Base on branch `EWM15431_live-listener-interface`; **do not** rebase
+1. Base on branch `EWM15431_live-listener-interface__agents`; **do not** rebase
    onto `main` / `master`.
 2. **Scope fence.** Touch only the two paths listed in §2 below. Do
    **not** modify any file under `Framework/LiveData/src/` or

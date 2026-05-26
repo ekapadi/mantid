@@ -16,7 +16,7 @@ foundation onto which `subspec04`–`subspec06` graft the remaining
 
 ## 0. Agent execution instructions (must obey)
 
-1. Base on branch `EWM15431_live-listener-interface`; **do not** rebase
+1. Base on branch `EWM15431_live-listener-interface__agents`; **do not** rebase
    onto `main` / `master`.
 2. **Scope fence.** Touch only the three files in §2 below.
    Do **not** modify any file under `Framework/LiveData/src/` or
@@ -300,9 +300,10 @@ Add these as a `/// Notes:` comment block immediately above the class:
   This is the required lifecycle: the socket must be connected before
   the background thread can begin reading.
 - **The UDS address is built via
-  `Poco::Net::AddressFamily::UNIX_LOCAL`**, not via a `"unix:path"`
-  config-string. Do **not** set the `SNSLiveEventDataListener.testAddress`
-  config key; that key supports only TCP `"host:port"` form.
+  `Poco::Net::AddressFamily::UNIX_LOCAL`** using the two-argument
+  `SocketAddress(AddressFamily::UNIX_LOCAL, path)` constructor. Do
+  **not** set the `SNSLiveEventDataListener.testAddress` config key;
+  that key supports only TCP `"host:port"` form.
 - **Destruction order in `tearDown` is strict:** listener → server →
   sockfile → watchdog. Reordering risks the listener's bg thread
   reading from a destroyed socket.

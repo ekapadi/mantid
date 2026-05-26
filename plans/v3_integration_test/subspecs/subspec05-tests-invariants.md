@@ -25,7 +25,7 @@ after the methods from `subspec04`.
 
 ## 0. Agent execution instructions (must obey)
 
-1. Base on branch `EWM15431_live-listener-interface`.
+1. Base on branch `EWM15431_live-listener-interface__agents`.
 2. **Scope fence.** Edit exactly **one** file:
    `Framework/LiveData/test/SNSLiveEventDataListenerTest.h`. Do not
    modify CMake, `MockSMSServer.h/.cpp`, the legacy header, or any

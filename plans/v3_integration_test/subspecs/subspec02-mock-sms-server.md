@@ -10,7 +10,7 @@ referenced by any test header).
 
 ## 0. Agent execution instructions (must obey)
 
-1. Base on branch `EWM15431_live-listener-interface`; **do not** rebase
+1. Base on branch `EWM15431_live-listener-interface__agents`; **do not** rebase
    onto `main` / `master`.
 2. **Scope fence.** Touch only the three files in §2 below.
    Do **not** modify any file under `Framework/LiveData/src/` or
@@ -119,15 +119,8 @@ even if `accept()` never completed.
 
 ### 3.4 Correct Poco UDS `SocketAddress` construction
 
-> **IMPORTANT — the `"unix:path"` string syntax is not valid Poco.**
->
-> Poco's `SocketAddress` string constructor parses `"host:port"` for
-> TCP. It does **not** recognise a `"unix:/path"` or `"unix:path"`
-> prefix. Attempting `Poco::Net::SocketAddress("unix:/tmp/sock")` will
-> throw or misinterpret the string as a hostname.
-
-The correct constructor for a Unix-domain socket address is the
-two-argument form that accepts an `AddressFamily` enum:
+Construct the Unix-domain socket address with Poco's two-argument
+constructor that takes an `AddressFamily` enum and the filesystem path:
 
 ```cpp
 Poco::Net::SocketAddress(Poco::Net::AddressFamily::UNIX_LOCAL, path)
