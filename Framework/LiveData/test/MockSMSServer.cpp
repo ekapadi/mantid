@@ -23,6 +23,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <iomanip>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -64,6 +65,21 @@ struct MockSMSServer::Impl {
 
   explicit Impl(std::string path) : m_path(std::move(path)) {}
 
+  // Receive exactly 'len' bytes from the client socket.
+  // Returns false on EOF or network error; true if all bytes were read.
+  bool recvAll(void *buf, std::size_t len) {
+    auto *ptr = static_cast<char *>(buf);
+    std::size_t remaining = len;
+    while (remaining > 0) {
+      int n = m_clientSocket.receiveBytes(ptr, static_cast<int>(remaining));
+      if (n <= 0)
+        return false;
+      ptr += n;
+      remaining -= static_cast<std::size_t>(n);
+    }
+    return true;
+  }
+
   void run() {
     try {
       // Accept exactly one client connection
@@ -75,6 +91,43 @@ struct MockSMSServer::Impl {
 
       // Watchdog timer: if script not exhausted within deadline, close socket
       auto deadline = std::chrono::steady_clock::now() + m_watchdog;
+
+      // SNSLiveEventDataListener::run() sends a CLIENT_HELLO packet as its
+      // very first action (SNSLiveEventDataListener.cpp:225).  Read and verify
+      // it before starting the script playback sequence.
+      {
+        // ADARA header: 16 bytes (payload_len u32, type_ver u32, ts_sec u32, ts_nsec u32)
+        uint8_t hdr[16]{};
+        if (!recvAll(hdr, sizeof(hdr))) {
+          g_log.warning() << "MockSMSServer: failed to read CLIENT_HELLO header from listener\n";
+          return;
+        }
+
+        uint32_t payloadLen = static_cast<uint32_t>(hdr[0]) | (static_cast<uint32_t>(hdr[1]) << 8) |
+                              (static_cast<uint32_t>(hdr[2]) << 16) | (static_cast<uint32_t>(hdr[3]) << 24);
+        uint32_t typeWord = static_cast<uint32_t>(hdr[4]) | (static_cast<uint32_t>(hdr[5]) << 8) |
+                            (static_cast<uint32_t>(hdr[6]) << 16) | (static_cast<uint32_t>(hdr[7]) << 24);
+        // ADARA_BASE_PKT_TYPE: base type = typeWord >> 8
+        uint16_t baseType = static_cast<uint16_t>(typeWord >> 8);
+
+        // Read the packet payload (discard)
+        if (payloadLen > 0) {
+          std::vector<uint8_t> payload(payloadLen);
+          if (!recvAll(payload.data(), payloadLen)) {
+            g_log.warning() << "MockSMSServer: failed to read CLIENT_HELLO payload from listener\n";
+            return;
+          }
+        }
+
+        // ADARA::PacketType::Type::CLIENT_HELLO_TYPE = 0x4006
+        constexpr uint16_t CLIENT_HELLO_BASE = 0x4006u;
+        if (baseType != CLIENT_HELLO_BASE) {
+          g_log.warning() << "MockSMSServer: expected CLIENT_HELLO packet (base type 0x4006) "
+                          << "but received base type 0x" << std::hex << baseType
+                          << " — aborting script playback\n";
+          return;
+        }
+      }
 
       for (std::size_t i = 0; i < m_script.size(); ++i) {
         if (m_stop.load())
