@@ -1,0 +1,161 @@
+// Mantid Repository : https://github.com/mantidproject/mantid
+//
+// Copyright © 2018 ISIS Rutherford Appleton Laboratory UKRI,
+//   NScD Oak Ridge National Laboratory, European Spallation Source,
+//   Institut Laue - Langevin & CSNS, Institute of High Energy Physics, CAS
+// SPDX-License-Identifier: GPL-3.0+
+//
+// SNSLiveEventDataListener-state-machine-after.dot
+//
+// Post-refactor state-machine diagram for SNSLiveEventDataListener.
+//
+// Two separate dashed green clusters mark the two explicit transition hooks
+// (onBeginRun, onEndRun) dispatched from extractData() -> onBeforeExtract().
+// The pause-gate release (m_pauseNetRead = false) moves OUT of the cluster
+// labels and is shown on the exit edges instead — because it is now an
+// explicit, named side effect of the hook rather than an implicit side effect
+// of the getter.
+//
+// Three axes are modelled:
+//   * Primary:  runState  (NoRun / BeginRun / Running / EndRun)
+//   * Separate: isPaused  (self-loop on Running; orthogonal; applied
+//                          immediately in the background thread)
+//   * Separate: listenerState  (Disconnected / Connected / ReadWait / Error)
+//
+// Regenerate PNG:
+//   dot -Tpng -o SNSLiveEventDataListener-state-machine-after.png \
+//             SNSLiveEventDataListener-state-machine-after.dot
+
+digraph SNSLiveEventDataListener_after {
+
+    graph [
+        label    = "SNSLiveEventDataListener — state machine (post-refactor)\nCommit boundary: extractData() -> onBeforeExtract() -> onBeginRun() / onEndRun()"
+        labelloc = "t"
+        fontname = "Helvetica"
+        fontsize = 13
+        rankdir  = "LR"
+        nodesep  = 0.8
+        ranksep  = 1.4
+        compound = true
+    ]
+
+    node [fontname="Helvetica" fontsize=11 shape=ellipse style=filled fillcolor=white]
+    edge [fontname="Helvetica" fontsize=9]
+
+    // ── Initial pseudostate ──────────────────────────────────────────────
+    _init_ [shape=point style=filled color=black width=0.2 label=""]
+    _init_ -> NoRun [arrowhead=normal]
+
+    // ── runState nodes outside the commit clusters ───────────────────────
+    NoRun   [label="NoRun"   fillcolor=white]
+    Running [label="Running" fillcolor=lightblue]
+
+    // ── Commit boundary 1: mutations inside extractData() -> onBeginRun() ─
+    // Note: m_pauseNetRead=false (pause-gate release) is shown on the exit
+    // edge below, not in this label — it has moved out of the cluster.
+    subgraph cluster_onBeginRun {
+        label    = "committed inside extractData()\n-> onBeforeExtract() -> onBeginRun()\n* consume m_deferredRunDetailsPkt\n* clear m_instrumentXML, m_instrumentName, m_nameMap\n* initWorkspacePart1()\n* m_adaraRunStatus = Running"
+        style    = "dashed"
+        color    = "darkgreen"
+        fontname = "Helvetica"
+        fontsize = 9
+
+        BeginRun [label="BeginRun" fillcolor="#e8f8e8"]
+    }
+
+    // ── Commit boundary 2: mutations inside extractData() -> onEndRun() ───
+    // Note: m_pauseNetRead=false (pause-gate release) is shown on the exit
+    // edge below, not in this label — it has moved out of the cluster.
+    subgraph cluster_onEndRun {
+        label    = "committed inside extractData()\n-> onBeforeExtract() -> onEndRun()\n* clear m_instrumentXML, m_instrumentName, m_nameMap, m_dataStartTime\n* initWorkspacePart1()\n* m_adaraRunStatus = NoRun"
+        style    = "dashed"
+        color    = "darkgreen"
+        fontname = "Helvetica"
+        fontsize = 9
+
+        EndRun [label="EndRun" fillcolor="#e8f8e8"]
+    }
+
+    // ── Background-thread queuing transitions (dashed steel-blue) ────────
+    // Identical to the pre-refactor path: sets m_pendingTransition and
+    // m_pauseNetRead=true.  Commit is deferred to extractData().
+    NoRun -> BeginRun [
+        label = "rxPacket(RunStatusPkt [NEW_RUN])\nm_adaraRunStatus = BeginRun\nm_pendingTransition = BeginRun\nm_pauseNetRead = true"
+        style = dashed
+        color = "steelblue"
+    ]
+    Running -> EndRun [
+        label = "rxPacket(RunStatusPkt [END_RUN])\nm_adaraRunStatus = EndRun\nm_pendingTransition = EndRun\nm_pauseNetRead = true"
+        style = dashed
+        color = "steelblue"
+    ]
+
+    // ── Commit transitions — hooks dispatched from extractData() ─────────
+    // The pause-gate release (m_pauseNetRead=false) appears here on the
+    // exit edge rather than inside the cluster label.
+    BeginRun -> Running [
+        label    = "onBeginRun(): m_adaraRunStatus = Running\nm_pendingTransition consumed\nm_pauseNetRead = false  [pause-gate released]"
+        color    = "darkgreen"
+        penwidth = 2
+    ]
+    EndRun -> NoRun [
+        label    = "onEndRun(): m_adaraRunStatus = NoRun\nm_pendingTransition consumed\nm_pauseNetRead = false  [pause-gate released]"
+        color    = "darkgreen"
+        penwidth = 2
+    ]
+
+    // ── isPaused axis — separate small subgraph ───────────────────────────
+    // Orthogonal to runState.  Applied immediately in the background thread
+    // via rxPacket(AnnotationPkt); does NOT use m_pendingTransition.
+    // Unchanged from pre-refactor.
+    subgraph cluster_ispaused {
+        label    = "isPaused axis  (orthogonal to runState)"
+        style    = "rounded"
+        color    = "darkorange"
+        fontsize = 10
+
+        Running_p [
+            label     = "Running\n(m_isDasPaused)"
+            fillcolor = "#fff4e0"
+            style     = "filled,dashed"
+        ]
+
+        Running_p -> Running_p [
+            label = "AnnotationPkt(PAUSE)\n-> m_isDasPaused = true"
+            color = "darkorange"
+            style = "dashed"
+        ]
+    }
+
+    Running   -> Running_p [
+        label = "AnnotationPkt(PAUSE)\n-> m_isDasPaused = true\n(background thread, immediate)"
+        color = "darkorange"
+        style = "dashed"
+    ]
+    Running_p -> Running [
+        label = "AnnotationPkt(RESUME)\n-> m_isDasPaused = false\n(background thread, immediate)"
+        color = "darkorange"
+        style = "dashed"
+    ]
+
+    // ── listenerState axis — separate small subgraph ──────────────────────
+    // ReadWait -> Connected label differs from pre-refactor: the release now
+    // happens inside the named hooks, not inside the getter.
+    subgraph cluster_listenerstate {
+        label    = "listenerState axis"
+        style    = "rounded"
+        color    = "gray50"
+        fontsize = 10
+
+        Disconnected [label="Disconnected"                    fillcolor=white]
+        Connected    [label="Connected"                       fillcolor=lightgreen]
+        ReadWait     [label="ReadWait\n(m_pauseNetRead=true)" fillcolor=lightyellow]
+        Error        [label="Error"                           fillcolor=lightsalmon]
+    }
+
+    Disconnected -> Connected [label="connect()\nsocket open"]
+    Connected    -> ReadWait  [label="RunStatusPkt\n-> m_pauseNetRead=true"]
+    ReadWait     -> Connected [label="onBeginRun() / onEndRun():\n-> m_pauseNetRead=false"]
+    Connected    -> Error     [label="background\nexception"]
+    ReadWait     -> Error     [label="background\nexception"]
+}
