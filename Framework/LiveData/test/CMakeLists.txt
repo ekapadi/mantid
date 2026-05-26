@@ -31,4 +31,6 @@ if(CXXTEST_FOUND)
   # Run MonitorLiveDataTest in serial mode to avoid resource over-subscription problems when allowing ctest to use all
   # cores.
   set_tests_properties(LiveDataTest_MonitorLiveDataTest PROPERTIES RUN_SERIAL TRUE)
+  set_tests_properties(LiveDataTest_SNSLiveEventDataListenerTest
+                       PROPERTIES TIMEOUT 120)
 endif()
