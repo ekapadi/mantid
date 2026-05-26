@@ -1,0 +1,20 @@
+We're working in the repository `ekapadi/mantid` on the branch `EWM15431_live-listener-interface__agents`.
+We've just produced a document describing the refactoring on this branch: `dev-docs/source/SNSLiveEventDataListenerRefactoring.rst`: this document consolidates details from `plans/listener_refactoring_v3.md`.
+
+We want to create two companion diagrams: `dev-docs/source/images/SNSLiveEventDataListener-state-machine-before.dot` and `dev-docs/source/images/SNSLiveEventDataListener-state-machine-after.dot` GraphViz that will produce a labeled diagram of the `SNSLiveEventDataListener` state machine.  The PNG image that these generate will then be included in the `*.rst` doc.  This diagram should have two variants:  (a) "..before" variant: add "---" (i.e. box) boundaries showing where the transitions occurred *prior* to the current changes (i.e. in `runStatus`); and (b) "..after" variant: add boundaries showing where the transitions occur *now* (in `extractData`).
+
+For each of these diagrams:
+  
+  * Three plausible axes should be modeled separately: `runState`, `listenerState`, and `isPaused`;
+  
+  * the primary diagram models `runState` (the one the refactor actually changed), with `isPaused` shown as a self-loop annotation on Running, and `listenerState` in a separate small subgraph;
+  
+  * `Edge labels = events`: Each transition labeled with the ADARA packet / call that triggers it: RunStatusPkt(BeginRun), RunStatusPkt(EndRun), PauseAnnotationPkt(true/false), socket events for listenerState, etc.
+  
+  * The "boundary box" overlay. Use GraphViz subgraph cluster_* with a labeled border to enclose the transitions that are committed at a particular point in the code:
+
+      - Variant (a) — pre-refactor: one cluster around the BeginRun and EndRun transitions labeled committed inside runStatus() (with the side-effect list as the cluster label), plus the m_pauseNetRead clear shown as an edge effect.
+      
+      - Variant (b) — post-refactor: clusters around the same transitions labeled committed inside extractData() → onBeginRun() / onEndRun(), with the deferred-packet consumption and cache-clear shown as separate cluster contents. The pause-gate release moves out of the cluster.
+
+We will create two separate `.dot` files (…-before.dot, …-after.dot) sharing 90% of their content, which is just duplicated for clarity (i.e. include statements are not used for the duplicated content).
