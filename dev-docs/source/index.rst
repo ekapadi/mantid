@@ -300,6 +300,7 @@ Component Overviews
    PythonVSCppAlgorithms
    SampleLogsDev
    ScriptRepository
+   SNSLiveEventDataListenerRefactoring
    TaskBasedAlgorithms
    Widgets/Plotting
    WritingAnAlgorithm
