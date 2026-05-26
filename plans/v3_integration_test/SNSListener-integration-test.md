@@ -16,24 +16,32 @@ Read this section first; it constrains *how* the spec is to be implemented.
    Do **not** modify any file under `Framework/LiveData/src/` or
    `Framework/LiveData/inc/`. Do not "fix" comments, reformat headers, or
    touch unrelated tests.
-3. **Verify loop.** After each iteration:
-   ```
-   cmake --build <build-dir> --target LiveDataTest
-   ctest --test-dir <build-dir> -R LiveDataTest --output-on-failure
-   ```
-   Iterate until green. The integration tests added by this spec must pass on
-   Linux; on Windows they must compile to an empty suite (see §3).
-4. **Legacy file.** The current `SNSLiveEventDataListenerTest.h` is renamed and
-   **retained** as historical reference. It must remain in the tree but must
-   **not** appear in `TEST_FILES`. Do not delete it.
-5. **Ambiguity protocol.** If the spec is wrong, contradictory, or
+3. **Static verification only — DO NOT build, DO NOT run tests.** A full
+   Mantid build takes hours and you cannot launch the test binary in the
+   correct environment. Verify your changes by:
+   - reading the relevant production code on this branch;
+   - cross-referencing against the line ranges cited in §1 and §6;
+   - checking that file names, `#include`s, `namespace` usages, and CMake
+     edits are internally consistent;
+   - hand-tracing the threading / lifetime rules in §4.2 and §5.3.
+
+   The maintainer will perform the build and runtime verification by hand
+   as part of PR review. Anywhere this spec mentions `cmake`, `ctest`,
+   compiler output, or test pass/fail status, that instruction is for the
+   *reviewer* — **not** for you.
+4. **No build artefacts in the PR.** Do not commit `build/`, `CMakeFiles/`,
+   generated headers, or compiler output.
+5. **Legacy file.** The current `SNSLiveEventDataListenerTest.h` is renamed
+   and **retained** as historical reference. It must remain in the tree but
+   must **not** appear in `TEST_FILES`. Do not delete it.
+6. **Ambiguity protocol.** If the spec is wrong, contradictory, or
    under-specified, **stop** and surface the question in the PR description.
    Do not invent a resolution silently.
-6. **Flake check (§9 item 8).** Skip unless explicitly requested. It is a
+7. **Flake check (§9 item 8).** Skip unless explicitly requested. It is a
    manual operator check, not a gating CI step.
-7. **No production code changes.** If you believe production code must change
-   for a test to pass, you have misread either the spec or the production
-   contract — stop and ask.
+8. **No production code changes.** If you believe production code must
+   change for a test to pass, you have misread either the spec or the
+   production contract — stop and ask.
 
 ---
 
@@ -267,7 +275,14 @@ out of v1 to keep the surface minimal.
 
 ### 5.1 Hang protection — four layers
 
-A unit test that hangs blocks the entire ctest invocation. Defence in depth:
+> **Notes for reviewer:** *[ agent should not run `ctest`! ]*
+> This section describes the runtime behaviour the maintainer will observe
+> when invoking `ctest` during PR review. The coding agent does not run
+> the suite — its job is to write the four protection layers, not to
+> verify them at runtime.
+
+A test that hangs at runtime blocks the entire `ctest` invocation.
+Defence in depth:
 
 1. **`waitFor(pred, timeout = 5s, poll = 10ms)`** — replaces every
    `Poco::Thread::sleep` in the legacy assertions. On timeout it calls
@@ -287,13 +302,21 @@ A unit test that hangs blocks the entire ctest invocation. Defence in depth:
 4. **`TestWatchdog` RAII helper** — constructed at the top of every test
    that drives the listener; arms a background thread that, if not
    disarmed within 60 s, calls `g_log.fatal` and `std::abort()`. A clean
-   crash of the test binary is strictly preferable to wedging ctest. The
-   watchdog is disarmed by the fixture's `tearDown`.
+   crash of the test binary is strictly preferable to wedging `ctest` on
+   the reviewer's machine. The watchdog is disarmed by the fixture's
+   `tearDown`.
 
 These limits are deliberately loose (5 / 10 / 30 / 60 s) — they exist to
 catch *bugs*, not to enforce performance. Healthy tests complete in <1 s.
 
 ### 5.2 Suite-wide ctest timeout
+
+> **Notes for reviewer:** *[ agent should not run `ctest`! ]*
+> The `set_tests_properties(... TIMEOUT 120)` CMake edit *is* part of the
+> agent's deliverable (see §7). What this section describes — the
+> behaviour of `ctest` itself enforcing the 120 s ceiling — is observable
+> only at the reviewer's runtime and is not something the agent needs to
+> verify.
 
 Add a CMake property registration after the existing `MonitorLiveDataTest`
 serial-run line (see §7):
@@ -303,7 +326,7 @@ set_tests_properties(LiveDataTest_SNSLiveEventDataListenerTest
                      PROPERTIES TIMEOUT 120)
 ```
 
-This is the last-resort guard: ctest itself kills the test binary after
+This is the last-resort guard: `ctest` itself kills the test binary after
 120 s. It should never be hit in practice; if it is, the `TestWatchdog`
 in §5.1(4) failed and that is itself a bug worth investigating.
 
@@ -539,6 +562,9 @@ set_tests_properties(LiveDataTest_SNSLiveEventDataListenerTest
 
 ## 9. Definition of done
 
+Items 1–4 and 7 are the **agent's deliverables** — verifiable by static
+inspection of the PR.
+
 1. `SNSLiveEventDataListenerLegacyTest.h` exists, is not registered, and
    contains the required header comment.
 2. `SNSLiveEventDataListenerTest.h`, `MockSMSServer.h`,
@@ -548,16 +574,30 @@ set_tests_properties(LiveDataTest_SNSLiveEventDataListenerTest
    `SNSLiveEventDataListenerLegacyTest.h`.
 4. `Framework/LiveData/test/CMakeLists.txt` lists `MockSMSServer.cpp` in
    `TESTHELPER_SRCS` and sets the `TIMEOUT 120` property.
-5. On Linux/macOS, all 22 tests pass under `ctest -R LiveDataTest`.
-6. On Windows, the suite compiles cleanly to an empty `CxxTest::TestSuite`
-   and `ctest -R LiveDataTest` passes (no SNS tests registered).
 7. No file under `Framework/LiveData/src/` or
    `Framework/LiveData/inc/` is modified by the PR.
-8. *(Manual, not CI-gated.)* A deliberate-deadlock injection check —
-   temporarily insert a `std::this_thread::sleep_for(std::chrono::hours{1})`
-   in `onBeforeExtract` — must cause the affected test to fail-fast via
+
+---
+
+> **Notes for reviewer:** *[ agent should not run `ctest`! ]*
+> Items 5, 6, and 8 below are runtime-verifiable only, by the maintainer,
+> after a local build. The coding agent has been explicitly instructed
+> (§0 item 3) **not** to build or run tests. Do not interpret the absence
+> of build/test evidence in the PR as an oversight — it is the
+> contracted workflow.
+
+5. *(Reviewer-verified.)* On Linux/macOS, all 22 tests pass under
+   `ctest -R LiveDataTest`.
+6. *(Reviewer-verified.)* On Windows, the suite compiles cleanly to an
+   empty `CxxTest::TestSuite` and `ctest -R LiveDataTest` passes (no SNS
+   tests registered).
+8. *(Reviewer-only, optional, not CI-gated.)* A deliberate-deadlock
+   injection check — temporarily insert a
+   `std::this_thread::sleep_for(std::chrono::hours{1})` in
+   `onBeforeExtract` — must cause the affected test to fail-fast via
    the `extractWithTimeout` guard within ~10 s, not hang. Revert before
-   commit. Operator-run only.
+   commit. Operator-run only; **never** to be performed by the coding
+   agent.
 
 ---
 
