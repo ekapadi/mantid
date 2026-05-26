@@ -138,4 +138,12 @@ digraph SNSLiveEventDataListener_before {
     ReadWait     -> Connected [label="runStatus() commits:\n-> m_pauseNetRead=false"]
     Connected    -> Error     [label="background\nexception"]
     ReadWait     -> Error     [label="background\nexception"]
+
+    // ── Layout anchors ────────────────────────────────────────────────────
+    // Invisible constraint=false edges that share rank columns with the main
+    // nodes (same x-rank) to pull the listenerState cluster to the bottom of
+    // the rendered image without disturbing the runState layout.
+    NoRun     -> Disconnected [style=invis constraint=false weight=5]
+    Running   -> Connected    [style=invis constraint=false weight=5]
+    Running_p -> ReadWait     [style=invis constraint=false weight=5]
 }

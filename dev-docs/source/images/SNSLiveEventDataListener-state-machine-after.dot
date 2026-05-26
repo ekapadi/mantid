@@ -9,12 +9,12 @@
 //
 // Post-refactor state-machine diagram for SNSLiveEventDataListener.
 //
-// Two separate dashed green clusters mark the two explicit transition hooks
-// (onBeginRun, onEndRun) dispatched from extractData() -> onBeforeExtract().
-// The pause-gate release (m_pauseNetRead = false) moves OUT of the cluster
-// labels and is shown on the exit edges instead — because it is now an
-// explicit, named side effect of the hook rather than an implicit side effect
-// of the getter.
+// A single dashed dark-green cluster wraps both BeginRun and EndRun —
+// identical visual structure to the pre-refactor diagram — but the cluster
+// label and commit-edge labels reference extractData() → onBeginRun() /
+// onEndRun() instead of runStatus().  The pause-gate release
+// (m_pauseNetRead = false) moves onto the commit-edge labels (exit edges
+// of the cluster) rather than appearing inside the cluster label itself.
 //
 // Three axes are modelled:
 //   * Primary:  runState  (NoRun / BeginRun / Running / EndRun)
@@ -50,30 +50,22 @@ digraph SNSLiveEventDataListener_after {
     NoRun   [label="NoRun"   fillcolor=white]
     Running [label="Running" fillcolor=lightblue]
 
-    // ── Commit boundary 1: mutations inside extractData() -> onBeginRun() ─
-    // Note: m_pauseNetRead=false (pause-gate release) is shown on the exit
-    // edge below, not in this label — it has moved out of the cluster.
-    subgraph cluster_onBeginRun {
-        label    = "committed inside extractData()\n-> onBeforeExtract() -> onBeginRun()\n* consume m_deferredRunDetailsPkt\n* clear m_instrumentXML, m_instrumentName, m_nameMap\n* initWorkspacePart1()\n* m_adaraRunStatus = Running"
+    // ── Commit boundary: mutations committed inside extractData() ─────────
+    // Same visual structure as the pre-refactor cluster; the key difference
+    // is that the commit now fires in the named hooks onBeginRun/onEndRun
+    // (dispatched from extractData() → onBeforeExtract()) rather than as a
+    // hidden side effect of the runStatus() getter.
+    // The pause-gate release (m_pauseNetRead=false) is shown on the exit
+    // edges below, not inside this cluster label.
+    subgraph cluster_committed_extractdata {
+        label    = "committed inside extractData()\n-> onBeforeExtract() -> onBeginRun() / onEndRun()\n* [BeginRun] consume m_deferredRunDetailsPkt\n* clear m_instrumentXML, m_instrumentName, m_nameMap\n* initWorkspacePart1()\n* advance m_adaraRunStatus  (BeginRun->Running  or  EndRun->NoRun)"
         style    = "dashed"
         color    = "darkgreen"
         fontname = "Helvetica"
         fontsize = 9
 
         BeginRun [label="BeginRun" fillcolor="#e8f8e8"]
-    }
-
-    // ── Commit boundary 2: mutations inside extractData() -> onEndRun() ───
-    // Note: m_pauseNetRead=false (pause-gate release) is shown on the exit
-    // edge below, not in this label — it has moved out of the cluster.
-    subgraph cluster_onEndRun {
-        label    = "committed inside extractData()\n-> onBeforeExtract() -> onEndRun()\n* clear m_instrumentXML, m_instrumentName, m_nameMap, m_dataStartTime\n* initWorkspacePart1()\n* m_adaraRunStatus = NoRun"
-        style    = "dashed"
-        color    = "darkgreen"
-        fontname = "Helvetica"
-        fontsize = 9
-
-        EndRun [label="EndRun" fillcolor="#e8f8e8"]
+        EndRun   [label="EndRun"   fillcolor="#e8f8e8"]
     }
 
     // ── Background-thread queuing transitions (dashed steel-blue) ────────
@@ -158,4 +150,12 @@ digraph SNSLiveEventDataListener_after {
     ReadWait     -> Connected [label="onBeginRun() / onEndRun():\n-> m_pauseNetRead=false"]
     Connected    -> Error     [label="background\nexception"]
     ReadWait     -> Error     [label="background\nexception"]
+
+    // ── Layout anchors ────────────────────────────────────────────────────
+    // Invisible constraint=false edges that share rank columns with the main
+    // nodes (same x-rank) to pull the listenerState cluster to the bottom of
+    // the rendered image without disturbing the runState layout.
+    NoRun     -> Disconnected [style=invis constraint=false weight=5]
+    Running   -> Connected    [style=invis constraint=false weight=5]
+    Running_p -> ReadWait     [style=invis constraint=false weight=5]
 }
