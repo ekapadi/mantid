@@ -18,6 +18,7 @@
 #include <cxxtest/TestSuite.h>
 
 #include "MantidAPI/ILiveListener.h"
+#include "MantidAPI/MatrixWorkspace.h"
 #include "MantidAPI/Run.h"
 #include "MantidAPI/Workspace_fwd.h"
 #include "MantidDataObjects/EventWorkspace.h"
@@ -282,7 +283,7 @@ public:
     TS_ASSERT_DIFFERS(ws1, nullptr);
     TS_ASSERT_DIFFERS(ws2, nullptr);
     TS_ASSERT_EQUALS(m_listener->runStatus(),
-                     API::ILiveListener::RunEnded);
+                     API::ILiveListener::EndRun);
   }
 
   void test_runNumber_proposalId_title_propagate() {
@@ -302,7 +303,9 @@ public:
     auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
     m_server->releaseExtractGate();
     TS_ASSERT_DIFFERS(ws, nullptr);
-    const auto &run = ws->run();
+    auto mws = std::dynamic_pointer_cast<API::MatrixWorkspace>(ws);
+    TS_ASSERT_DIFFERS(mws, nullptr);
+    const auto &run = mws->run();
     TS_ASSERT_EQUALS(
         run.getPropertyValueAsType<std::string>("experiment_identifier"),
         std::string{"IPTS-12345"});
