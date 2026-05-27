@@ -35,8 +35,10 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -49,43 +51,43 @@ using namespace Mantid::LiveData;
 namespace {
 
 /// Instrument name advertised in the BeamlineInfo packet.  Must match the
-/// `name` attribute of @ref kMinimalIDF so that LoadInstrument's IDS cache
-/// keys consistently across tests.
-constexpr const char *kInstrumentName = "xmlInst";
+/// `name` attribute of the IDF loaded by @ref kMinimalIDF so that
+/// LoadInstrument's IDS cache keys consistently across tests.
+constexpr const char *kInstrumentName = "DUM";
 
-/// Minimal but VALID Mantid IDF used by the integration tests.  The ADARA
-/// `geometryPacketV0` fixture in ADARAPackets.h carries the placeholder XML
-/// `<instrument>VACUO</instrument>`, which is well-formed XML but is NOT a
-/// valid Mantid instrument definition; feeding it to LoadInstrument inside
-/// initWorkspacePart2() raises a SAXParseException, the listener's
-/// background thread exits, and every behavioural test downstream of the
-/// geometry+beamline handshake stalls in waitFor() or deadlocks on
-/// extractData().  Use this IDF (single pixel with id=1, covering pixel=1
-/// from buildBankedEventPkt) via Testing::buildGeometryPkt() instead.
-inline const std::string kMinimalIDF =
-    "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>"
-    "<instrument name=\"xmlInst\" valid-from=\"1900-01-31 23:59:59\" "
-    "valid-to=\"2100-01-31 23:59:59\" "
-    "last-modified=\"2010-10-06T16:21:30\">"
-    "<defaults />"
-    "<component type=\"panel\" idlist=\"idlist_for_bank1\">"
-    "<location r=\"0\" t=\"0\" rot=\"0\" axis-x=\"0\" axis-y=\"1\" "
-    "axis-z=\"0\" name=\"bank1\" />"
-    "</component>"
-    "<type is=\"detector\" name=\"panel\">"
-    "<properties/>"
-    "<component type=\"pixel\">"
-    "<location y=\"1\" x=\"1\"/>"
-    "</component>"
-    "</type>"
-    "<type is=\"detector\" name=\"pixel\">"
-    "<cuboid id=\"pixel-shape\" />"
-    "<algebra val=\"pixel-shape\"/>"
-    "</type>"
-    "<idlist idname=\"idlist_for_bank1\">"
-    "<id start=\"1\" end=\"1\" />"
-    "</idlist>"
-    "</instrument>";
+/// VALID Mantid IDF used by the integration tests, loaded once from
+/// `<instrument_dir>/unit_testing/DUM_Definition.xml` (the same fixture
+/// IDF used by `LoadEmptyInstrumentTest` and `He3TubeEfficiencyTest`).
+///
+/// The ADARA `geometryPacketV0` fixture in ADARAPackets.h carries the
+/// placeholder XML `<instrument>VACUO</instrument>`, which is well-formed
+/// XML but is NOT a valid Mantid instrument definition; feeding it to
+/// LoadInstrument inside `initWorkspacePart2()` raises a SAXParseException,
+/// the listener's background thread exits, and every behavioural test
+/// downstream of the geometry+beamline handshake stalls in waitFor() or
+/// deadlocks on extractData().  Use this IDF (3 detector pixels with
+/// ids 1..3, monitor with id 0) via Testing::buildGeometryPkt() instead.
+///
+/// Detector id 1 covers the `pixel=1` events emitted by
+/// `Testing::buildBankedEventPkt()` in these tests.
+inline const std::string &kMinimalIDF() {
+  static const std::string idf = []() {
+    auto &config = Kernel::ConfigService::Instance();
+    const std::filesystem::path path =
+        std::filesystem::path(config.getInstrumentDirectory()) /
+        "unit_testing" / "DUM_Definition.xml";
+    std::ifstream in(path);
+    if (!in) {
+      throw std::runtime_error(
+          "SNSLiveEventDataListenerTest: failed to open IDF at " +
+          path.string());
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+  }();
+  return idf;
+}
 
 /// Spin-wait up to @p timeout, polling every @p poll, until @p pred
 /// returns true.  On timeout calls TS_FAIL and returns false.
@@ -235,7 +237,7 @@ public:
     // for 10 s and returns Exception::NotYet.  Send a NEW_RUN but no
     // event packets so the workspace is initialised with zero events.
     m_server->script({
-        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildGeometryPkt(kMinimalIDF()),
         Testing::buildBeamlineInfoPkt(kInstrumentName),
         Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN,
                                     /*runNum=*/1,
@@ -259,7 +261,7 @@ public:
 
   void test_LegacyConnectionStatusTransitions() {
     m_server->script({
-        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildGeometryPkt(kMinimalIDF()),
         Testing::buildBeamlineInfoPkt(kInstrumentName),
         Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN,
                                     /*runNum=*/1,
@@ -281,7 +283,7 @@ public:
 
   void test_connect_succeeds_over_uds() {
     m_server->script({
-        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildGeometryPkt(kMinimalIDF()),
         Testing::buildBeamlineInfoPkt(kInstrumentName),
         Testing::PktDisconnect{},
     });
@@ -298,7 +300,7 @@ public:
         Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN,
                                     /*runNum=*/100,
                                     /*pulseId=*/0x0000000100000000ULL),
-        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildGeometryPkt(kMinimalIDF()),
         Testing::buildBeamlineInfoPkt(kInstrumentName),
         PKT(bankedEventPacketV1),
         Testing::PktWaitForExtract{},
@@ -323,7 +325,7 @@ public:
 
   void test_singleRun_extractsEventsAndRunNumber() {
     m_server->script({
-        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildGeometryPkt(kMinimalIDF()),
         Testing::buildBeamlineInfoPkt(kInstrumentName),
         Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 42,
                                     0x0000000100000000ULL),
@@ -360,15 +362,15 @@ public:
 
   void test_fullRun_beginExtractEndExtract() {
     m_server->script({
-        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildGeometryPkt(kMinimalIDF()),
         Testing::buildBeamlineInfoPkt(kInstrumentName),
         Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 55,
                                     0x0000000100000000ULL),
-        // Use the helper-built bank packet with pixel=1 so it matches
-        // kMinimalIDF's single-detector panel.  The raw
-        // bankedEventPacketV1 fixture references pixel ID 61092 which
-        // is not present in kMinimalIDF and would be discarded with
-        // an "Invalid pixel ID" warning.
+        // Use the helper-built bank packet with pixel=1 so it maps to
+        // detector id 1 in the DUM IDF.  The raw bankedEventPacketV1
+        // fixture references pixel ID 61092 which is not present in the
+        // DUM IDF and would be discarded with an "Invalid pixel ID"
+        // warning.
         Testing::buildBankedEventPkt(0x0000000100000000ULL,
                                       /*chargePc=*/1000.0,
                                       {{/*tof=*/100u, /*pixel=*/1u}}),
@@ -408,7 +410,7 @@ public:
     const std::string kProposalId = "IPTS-9999";
     const std::string kRunTitle = "integration test run";
     m_server->script({
-        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildGeometryPkt(kMinimalIDF()),
         Testing::buildBeamlineInfoPkt(kInstrumentName),
         Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 77,
                                     0x0000000100000000ULL),
