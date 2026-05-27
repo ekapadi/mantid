@@ -179,7 +179,7 @@ public:
     waitFor([&]{ return m_server->scriptIndex() >= 2; }, std::chrono::seconds{5});
     // After receiving Geometry and BeamlineInfo, listener is Connected.
     TS_ASSERT_EQUALS(m_listener->listenerState(),
-                     API::ILiveListener::ListenerState::Connected);
+                     API::ListenerState::Connected);
     m_server->releaseExtractGate();
   }
 
