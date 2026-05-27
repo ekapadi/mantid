@@ -257,17 +257,15 @@ Listeners that need to react to run boundaries should override the
      - When called
    * - ``onBeginRun()``
      - foreground
-     - Called from ``onAfterExtract()`` when a ``BeginRun``
-       transition has been committed.  The new run details are
-       available at this point.  The hook is intentionally deferred
-       until after ``doExtractData()`` so its workspace-reset side
-       effects do not wipe the run's final events before they are
-       handed to the caller.
+     - Called from ``onBeforeExtract()`` when a ``BeginRun``
+       transition is pending.  The new run details are available at
+       this point.
    * - ``onEndRun()``
      - foreground
      - Called from ``onAfterExtract()`` when an ``EndRun``
-       transition has been committed.  Like ``onBeginRun()`` it is
-       deferred until after ``doExtractData()`` for the same reason.
+       transition is pending.  Deferred to after ``doExtractData()``
+       so the finishing run's accumulated events are harvested before
+       the workspace buffer is reset.
    * - ``onRunPause(bool paused)``
      - background
      - Called directly from the background reader when a DAS

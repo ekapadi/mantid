@@ -57,27 +57,22 @@ protected:
   // virtual bool rxPacket( const ADARA::Packet &pkt);
 
   /// Called from LiveListener::extractData() before doExtractData().
-  /// Promotes any pending run-state transition into m_lastTransition (so
-  /// the caller's runStatus() / lastTransition() polls observe it), but does
-  /// NOT invoke onBeginRun()/onEndRun() yet — those hooks reset the event
-  /// buffer and are deferred to onAfterExtract() so doExtractData() can
-  /// harvest the run's accumulated events first.
+  /// Dequeues any pending run-state transition and dispatches to onBeginRun()
+  /// or onEndRun() as appropriate.
   void onBeforeExtract() override;
 
   /// Called from LiveListener::extractData() after doExtractData() returns
-  /// normally.  Dispatches the committed transition to onBeginRun() /
-  /// onEndRun() (whose workspace-reset side effects are intentionally
-  /// applied after the per-run event buffer has been handed to the caller),
-  /// and releases the m_pauseNetRead back-pressure flag.
+  /// normally. Clears the committed transition edge after a successful
+  /// workspace hand-off.
   void onAfterExtract() override;
 
-  /// Called from onAfterExtract() when a BeginRun transition is committed.
+  /// Called from onBeforeExtract() when a BeginRun transition is dequeued.
   /// Acquires m_mutex itself.  Resets workspace-initialisation state and applies
   /// run details from the deferred RunStatusPkt.  Throws std::runtime_error if
   /// m_deferredRunDetailsPkt is null (invariant violation in the producer side).
   virtual void onBeginRun();
 
-  /// Called from onAfterExtract() when an EndRun transition is committed.
+  /// Called from onBeforeExtract() when an EndRun transition is dequeued.
   /// Acquires m_mutex itself.  Resets workspace-initialisation state.
   virtual void onEndRun();
 
@@ -237,19 +232,12 @@ protected:
 
   ILiveListener::RunStatus m_adaraRunStatus{RunStatus::NoRun};
   std::optional<RunStatus> m_pendingTransition;
-  /// Promoted from m_pendingTransition in onBeforeExtract() so callers can
-  /// observe the committed edge after extractData() returns.  The associated
-  /// onBeginRun()/onEndRun() side effects are deferred to onAfterExtract()
-  /// and only applied once (tracked by m_lastTransitionApplied), so a
-  /// NotYet retry of doExtractData() does not lose the edge or double-fire
-  /// the hook.  Cleared at the start of the next onBeforeExtract() after the
-  /// edge has been applied (so MonitorLiveData does not re-process it on the
-  /// next tick).
+  /// Cleared in onAfterExtract() only after a successful doExtractData() call.
+  /// This allows m_lastTransition to persist across NotYet retries (C1 fix)
+  /// while still clearing it once the transition has been successfully
+  /// delivered to the caller (so MonitorLiveData does not re-process the edge
+  /// on the next tick).
   std::optional<RunStatus> m_lastTransition;
-  /// True once onBeginRun()/onEndRun() has been dispatched for the current
-  /// m_lastTransition edge; prevents double-dispatch on subsequent extracts
-  /// and gates clearing of m_lastTransition.
-  bool m_lastTransitionApplied{false};
 
   bool m_workspaceInitialized{false};
 

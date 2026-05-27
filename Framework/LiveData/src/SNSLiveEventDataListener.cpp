@@ -676,7 +676,8 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
       // complete the initialization, the extractData() function won't complete
       // successfully and onBeforeExtract() will thus never be called.
       // Since m_pauseNetRead is reset in onBeginRun()/onEndRun() (called from
-      // onAfterExtract()), the whole live listener subsystem would deadlock.
+      // onBeforeExtract()/onAfterExtract() respectively), the whole live
+      // listener subsystem would deadlock.
       //
       // So, we can't set m_pauseNetRead.  That's OK, because we don't actually
       // have any data from a previous run that we need to keep separate from
@@ -1530,69 +1531,56 @@ std::optional<ILiveListener::RunStatus> SNSLiveEventDataListener::lastTransition
 }
 
 // ---------------------------------------------------------------------------
-// onBeforeExtract — promote pending transition for caller visibility
+// onBeforeExtract / onAfterExtract — extractData() commit points
 // ---------------------------------------------------------------------------
-// The actual workspace-reset side effects of the transition (onBeginRun /
-// onEndRun) are deferred to onAfterExtract() so doExtractData() can harvest
-// the run's accumulated events BEFORE the buffer is reset.  See the contract
-// comment near the END_RUN handling in rxPacket(RunStatusPkt).
+// BeginRun is dispatched from onBeforeExtract() so the new run's workspace
+// initialisation is in place before doExtractData() snapshots it.  EndRun is
+// dispatched from onAfterExtract() so doExtractData() can harvest the
+// finishing run's accumulated events before onEndRun() resets the buffer.
 
 void SNSLiveEventDataListener::onBeforeExtract() {
-  std::lock_guard<std::mutex> scopedLock(m_mutex);
-  if (m_pendingTransition) {
-    // New pending edge — promote and arm dispatch.  This overwrites any
-    // previously-applied edge that was being held for caller visibility.
-    m_lastTransition = m_pendingTransition;
-    m_pendingTransition.reset();
-    m_lastTransitionApplied = false;
-  } else if (m_lastTransitionApplied) {
-    // Previous edge was dispatched on the prior extractData() and the caller
-    // has had a chance to observe it via runStatus()/lastTransition().  Clear
-    // it so subsequent steady-state polls fall through to runState().
-    // (If m_lastTransition is set but not yet applied — e.g. a NotYet retry —
-    // we deliberately leave it alone so onAfterExtract() can still dispatch.)
-    m_lastTransition.reset();
-    m_lastTransitionApplied = false;
+  std::optional<RunStatus> pending;
+  {
+    std::lock_guard<std::mutex> scopedLock(m_mutex);
+    pending = m_pendingTransition;
+  }
+  if (pending && *pending == BeginRun) {
+    {
+      std::lock_guard<std::mutex> scopedLock(m_mutex);
+      m_pendingTransition.reset();
+    }
+    onBeginRun();
+    {
+      std::lock_guard<std::mutex> scopedLock(m_mutex);
+      m_lastTransition = BeginRun;
+    }
+    m_pauseNetRead = false;
   }
 }
 
 void SNSLiveEventDataListener::onAfterExtract() {
-  // Apply the workspace-reset side effects of the committed transition AFTER
-  // doExtractData() has successfully handed the per-run event buffer to the
-  // caller.  This honours the contract documented near the END_RUN handler:
-  //   "This flag will be cleared in onEndRun() ... which is guaranteed to be
-  //    called after extractData() has returned data."
-  // m_lastTransition is intentionally NOT reset here — it stays visible to
-  // the caller's post-extract runStatus()/lastTransition() poll and is
-  // cleared at the start of the next onBeforeExtract().
-  std::optional<RunStatus> edge;
-  bool needDispatch = false;
+  std::optional<RunStatus> pending;
   {
     std::lock_guard<std::mutex> scopedLock(m_mutex);
-    edge = m_lastTransition;
-    if (edge && !m_lastTransitionApplied) {
-      needDispatch = true;
-      m_lastTransitionApplied = true;
-    }
+    pending = m_pendingTransition;
+    m_lastTransition.reset();
   }
-  if (!needDispatch)
-    return;
-
-  if (*edge == BeginRun)
-    onBeginRun();
-  else if (*edge == EndRun)
+  if (pending && *pending == EndRun) {
+    {
+      std::lock_guard<std::mutex> scopedLock(m_mutex);
+      m_pendingTransition.reset();
+      m_lastTransition = EndRun;
+    }
     onEndRun();
-
-  // Release the background reader (was blocked by m_pauseNetRead since the
-  // transition was queued).
-  m_pauseNetRead = false;
+    m_pauseNetRead = false;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Run-state transition hooks
 // ---------------------------------------------------------------------------
-// Hooks acquire m_mutex themselves (call site is now onAfterExtract(),
-// which does not hold the lock when it calls them).
+// Hooks acquire m_mutex themselves.  onBeginRun() is called from
+// onBeforeExtract(); onEndRun() is called from onAfterExtract().
 
 void SNSLiveEventDataListener::onBeginRun() {
   std::lock_guard<std::mutex> scopedLock(m_mutex);
