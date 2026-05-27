@@ -102,7 +102,7 @@ public:
     m_sockFileHandle = std::make_unique<Poco::TemporaryFile>();
     m_sockPath = m_sockFileHandle->path();
     if (m_sockPath.size() >= 100) {
-      TS_SKIP("UDS path too long for sun_path: " + m_sockPath);
+      TS_FAIL("UDS path too long for sun_path (>= 100 chars): " + m_sockPath);
       return;
     }
     // bind() requires the path to NOT exist:
