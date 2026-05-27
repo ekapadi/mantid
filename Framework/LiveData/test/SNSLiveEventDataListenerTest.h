@@ -21,6 +21,7 @@
 #include "MantidAPI/MatrixWorkspace.h"
 #include "MantidAPI/Run.h"
 #include "MantidAPI/Workspace_fwd.h"
+#include "MantidGeometry/Instrument.h"
 #include "MantidDataObjects/EventWorkspace.h"
 #include "MantidKernel/ConfigService.h"
 #include "MantidLiveData/SNSLiveEventDataListener.h"
