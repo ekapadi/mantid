@@ -187,7 +187,7 @@ public:
   }
 
   // -------------------------------------------------------------------------
-  // Sub-spec 07: onBeforeExtract dispatch tests
+  // Sub-spec 07: onBeforeExtract / onAfterExtract dispatch tests
   // -------------------------------------------------------------------------
 
   /** onBeforeExtract() with a queued BeginRun must dispatch exactly once and
@@ -205,15 +205,23 @@ public:
     TS_ASSERT_EQUALS(ILiveListener::BeginRun, *listener.lastTransition());
   }
 
-  /** onBeforeExtract() with a queued EndRun must dispatch exactly once and
-   *  set lastTransition() == EndRun.
+  /** onAfterExtract() with a queued EndRun must dispatch exactly once and
+   *  set lastTransition() == EndRun.  onBeforeExtract() must not dispatch
+   *  EndRun (EndRun is deferred so doExtractData() can harvest the buffer).
    */
-  void test_onBeforeExtract_dispatches_EndRun_to_hook() {
+  void test_onAfterExtract_dispatches_EndRun_to_hook() {
     TestableSNSListener listener;
     listener.m_stubHooks = true;
     listener.injectPendingTransition(ILiveListener::EndRun);
 
+    // onBeforeExtract must NOT dispatch EndRun.
     TS_ASSERT_THROWS_NOTHING(listener.callOnBeforeExtract());
+    TS_ASSERT_EQUALS(0, listener.beginRunCount);
+    TS_ASSERT_EQUALS(0, listener.endRunCount);
+    TS_ASSERT(!listener.lastTransition().has_value());
+
+    // onAfterExtract dispatches EndRun and commits lastTransition.
+    TS_ASSERT_THROWS_NOTHING(listener.callOnAfterExtract());
     TS_ASSERT_EQUALS(0, listener.beginRunCount);
     TS_ASSERT_EQUALS(1, listener.endRunCount);
     TS_ASSERT(listener.lastTransition().has_value());
@@ -272,16 +280,25 @@ public:
     TS_ASSERT(!listener.lastTransition().has_value());
   }
 
-  /** Symmetric test for EndRun. */
+  /** Symmetric test for EndRun: onAfterExtract() commits the EndRun edge and
+   *  a subsequent onAfterExtract() (no pending) clears it.
+   */
   void test_lastTransition_reports_EndRun_then_null_after_success() {
     TestableSNSListener listener;
     listener.m_stubHooks = true;
 
     listener.injectPendingTransition(ILiveListener::EndRun);
+
+    // onBeforeExtract() does not dispatch EndRun — lastTransition() stays null.
     listener.callOnBeforeExtract();
+    TS_ASSERT(!listener.lastTransition().has_value());
+
+    // onAfterExtract() commits EndRun.
+    listener.callOnAfterExtract();
+    TS_ASSERT(listener.lastTransition().has_value());
     TS_ASSERT_EQUALS(ILiveListener::EndRun, *listener.lastTransition());
 
-    // After success: edge cleared by onAfterExtract().
+    // After next successful extract (no pending): edge cleared.
     listener.callOnAfterExtract();
     TS_ASSERT(!listener.lastTransition().has_value());
   }

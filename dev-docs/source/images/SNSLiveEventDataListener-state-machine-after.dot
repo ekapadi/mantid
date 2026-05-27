@@ -29,7 +29,7 @@
 digraph SNSLiveEventDataListener_after {
 
     graph [
-        label    = "SNSLiveEventDataListener — state machine (post-refactor)\nCommit boundary: extractData() -> onBeforeExtract() -> onBeginRun() / onEndRun()"
+        label    = "SNSLiveEventDataListener — state machine (post-refactor)\nCommit boundary: extractData() -> onBeforeExtract() -> doExtractData() -> onAfterExtract()"
         labelloc = "t"
         fontname = "Helvetica"
         fontsize = 13
@@ -53,8 +53,10 @@ digraph SNSLiveEventDataListener_after {
     // ── Commit boundary: mutations committed inside extractData() ─────────
     // Same visual structure as the pre-refactor cluster; the key difference
     // is that the commit now fires in the named hooks onBeginRun/onEndRun
-    // (dispatched from extractData() → onBeforeExtract()) rather than as a
-    // hidden side effect of the runStatus() getter.
+    // (onBeginRun dispatched from onBeforeExtract(); onEndRun deferred to
+    // onAfterExtract() so doExtractData() can harvest the finishing run's
+    // events first) rather than as a hidden side effect of the runStatus()
+    // getter.
     // The pause-gate release (m_pauseNetRead=false) is shown on the exit
     // edges below, not inside this cluster label.
     subgraph cluster_committed_extractdata {

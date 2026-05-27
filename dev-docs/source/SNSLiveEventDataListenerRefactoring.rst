@@ -150,7 +150,8 @@ The conflated ``m_status`` member is split into three:
   ``onBeginRun()`` / ``onEndRun()`` hooks.
 * ``m_pendingTransition`` — exactly one run-state edge waiting to be
   consumed by ``extractData()`` (queued by
-  ``rxPacket(RunStatusPkt)``, dequeued by ``onBeforeExtract()``).
+  ``rxPacket(RunStatusPkt)``, dequeued by ``onBeforeExtract()`` for
+  ``BeginRun`` and by ``onAfterExtract()`` for ``EndRun``).
 * ``m_lastTransition`` — what the most recent ``extractData()``
   consumed (read by ``lastTransition()``).
 
@@ -208,7 +209,7 @@ Header summary
        bool isConnected() override;
 
    protected:
-       /// Phase 1 of extraction: commit any queued run-state transition.
+       /// Phase 1 of extraction: commit any queued ``BeginRun`` transition.
        /// Called by LiveListener::extractData() before doExtractData().
        /// Runs on the foreground thread.
        void onBeforeExtract() override;
@@ -216,6 +217,12 @@ Header summary
        /// Phase 2/3 of extraction: wait for workspace initialisation,
        /// build the new EventWorkspace, swap, and return it.
        std::shared_ptr<API::Workspace> doExtractData() override;
+
+       /// Phase 4 of extraction: commit any queued ``EndRun`` transition.
+       /// Deferred to after doExtractData() so the finishing run's
+       /// accumulated events are harvested before the workspace buffer
+       /// is reset by onEndRun().
+       void onAfterExtract() override;
 
        /// Explicit, named state-transition hooks.
        virtual void onBeginRun();
@@ -309,14 +316,22 @@ Post-refactor: transitions committed inside ``extractData()``
    :alt: SNSLiveEventDataListener state machine, post-refactor.
          BeginRun→Running and EndRun→NoRun edges are enclosed in a
          dashed cluster labelled "committed inside extractData()
-         (onBeforeExtract → onBeginRun/onEndRun)", indicating that the
-         cache clears, workspace re-init, deferred-packet consumption,
-         and m_pauseNetRead release all happen as part of the
-         template-method extractData() call.
+         (onBeforeExtract → doExtractData → onAfterExtract)",
+         indicating that the cache clears, workspace re-init,
+         deferred-packet consumption, and m_pauseNetRead release all
+         happen as part of the template-method extractData() call —
+         with BeginRun dispatched in onBeforeExtract() and EndRun
+         deferred to onAfterExtract() so the finishing run's events
+         are harvested first.
 
 In the post-refactor design the commit boundary is **the
 ``extractData()`` template method** — specifically the
-``onBeforeExtract()`` hook that runs Phase 1 (dequeue and dispatch).
+``onBeforeExtract()`` and ``onAfterExtract()`` hooks that bracket
+``doExtractData()``.  ``BeginRun`` is dispatched in
+``onBeforeExtract()`` so the new run's workspace is initialised
+before ``doExtractData()`` snapshots it; ``EndRun`` is dispatched in
+``onAfterExtract()`` so the finishing run's accumulated events are
+harvested before ``onEndRun()`` resets the buffer.
 Because every consumer of ``ILiveListener`` calls ``extractData()``,
 every consumer drives the FSM forward, and stand-alone
 ``LoadLiveData`` works without changes.
@@ -403,10 +418,12 @@ The body below is presented as a single ``extractData()`` for clarity.
 In the actual implementation it is split across the
 ``LiveListener::extractData()`` template method (which handles the
 ``m_backgroundException`` rethrow), ``onBeforeExtract()`` (Phase 1:
-dequeue, dispatch hook, set ``m_lastTransition``), and
-``doExtractData()`` (Phase 2/3: workspace-init wait + EventWorkspace
-build + swap).  The exception-safety guarantees described below
-survive the split unchanged.
+commit a pending ``BeginRun`` edge), ``doExtractData()`` (Phase 2/3:
+workspace-init wait + EventWorkspace build + swap), and
+``onAfterExtract()`` (Phase 4: commit a pending ``EndRun`` edge —
+deferred until after ``doExtractData()`` so the finishing run's
+events are harvested first).  The exception-safety guarantees
+described below survive the split unchanged.
 
 .. code-block:: cpp
 
@@ -414,30 +431,25 @@ survive the split unchanged.
    SNSLiveEventDataListener::extractData() {     // conceptually
        if (m_backgroundException) throw *m_backgroundException;
 
-       // ---- Phase 1: commit any pending transition ---------------------
-       std::optional<RunStatus> pending;
+       // ---- Phase 1 (onBeforeExtract): commit a pending BeginRun --------
        {
-           std::lock_guard lock(m_mutex);
-           pending = m_pendingTransition;
-           m_pendingTransition.reset();
-       }
-
-       if (pending) {
-           // Reset m_lastTransition only when we are about to publish a new
-           // edge. If pending is nullopt we leave the previous transition
-           // visible, so LoadLiveData's NotYet retry loop does not lose the
-           // edge across re-invocation.
+           std::optional<RunStatus> pending;
            {
                std::lock_guard lock(m_mutex);
-               m_lastTransition.reset();
+               pending = m_pendingTransition;
            }
-           switch (*pending) {
-             case BeginRun: onBeginRun(); break;
-             case EndRun:   onEndRun();   break;
-             default:       break;          // Running / NoRun not queued
+           if (pending && *pending == BeginRun) {
+               {
+                   std::lock_guard lock(m_mutex);
+                   m_pendingTransition.reset();
+               }
+               onBeginRun();
+               {
+                   std::lock_guard lock(m_mutex);
+                   m_lastTransition = BeginRun;     // memoise for lastTransition()
+               }
+               m_pauseNetRead = false;
            }
-           std::lock_guard lock(m_mutex);
-           m_lastTransition = pending;       // memoise for lastTransition()
        }
 
        // ---- Phase 2: wait for workspace initialisation (unchanged) -----
@@ -475,31 +487,56 @@ survive the split unchanged.
            std::lock_guard lock(m_mutex);
            std::swap(m_eventBuffer, temp);
        }
+
+       // ---- Phase 4 (onAfterExtract): commit a pending EndRun ----------
+       // Deferred so the snapshot above contains the finishing run's
+       // accumulated events before onEndRun() resets the buffer.
+       {
+           std::optional<RunStatus> pending;
+           {
+               std::lock_guard lock(m_mutex);
+               pending = m_pendingTransition;
+               m_lastTransition.reset();        // clear stale edge from prior extract
+           }
+           if (pending && *pending == EndRun) {
+               {
+                   std::lock_guard lock(m_mutex);
+                   m_pendingTransition.reset();
+                   m_lastTransition = EndRun;   // memoise for lastTransition()
+               }
+               onEndRun();
+               m_pauseNetRead = false;
+           }
+       }
        return temp;
    }
 
 Important properties:
 
-* **Phase 1 runs once per call.**  The pending transition is dequeued
-  atomically; no ``m_transitionHandled`` flag is needed.
+* **Each phase runs once per call.**  The pending transition is dequeued
+  atomically in whichever phase claims it (Phase 1 for ``BeginRun``,
+  Phase 4 for ``EndRun``); no ``m_transitionHandled`` flag is needed.
 * **``m_lastTransition`` is reset only when a new edge is being
-  committed.**  If ``pending`` is ``nullopt`` (no new DAS edge since
-  the previous call), the prior value of ``m_lastTransition`` is left
-  in place.  This is essential for ``LoadLiveData``'s
-  ``Exception::NotYet`` retry loop: the first ``extractData()`` call
-  may commit ``BeginRun`` and then throw ``NotYet`` from Phase 2
-  (workspace not yet initialised); subsequent retry calls must still
-  report ``lastTransition() == BeginRun`` so ``MonitorLiveData`` can
-  rename the workspace.  Once a *new* edge arrives and is committed,
-  the stale value is overwritten.
-* **Phase 1 holds the mutex only while reading the queue**, not while
-  running the transition hook.  Hooks may safely take the mutex
-  themselves.
+  committed or in Phase 4 to clear a stale edge from the prior call.**
+  If no new DAS edge arrives during a given ``extractData()``, the
+  prior value of ``m_lastTransition`` is left in place by Phase 1.
+  This is essential for ``LoadLiveData``'s ``Exception::NotYet``
+  retry loop: the first ``extractData()`` call may commit
+  ``BeginRun`` and then throw ``NotYet`` from Phase 2 (workspace not
+  yet initialised); subsequent retry calls must still report
+  ``lastTransition() == BeginRun`` so ``MonitorLiveData`` can rename
+  the workspace.  Once a *new* edge arrives and is committed, the
+  stale value is overwritten.
+* **The transition phases hold the mutex only while reading the
+  queue**, not while running the transition hook.  Hooks may safely
+  take the mutex themselves.
 * **Exception-safe.**  Phase 2's ``Exception::NotYet`` is thrown
-  *after* the transition is already committed and ``m_lastTransition``
-  recorded; if Phase 2 throws, the next call sees no pending
-  transition (correct — it was applied) and ``m_lastTransition``
-  retains its value.
+  *after* a Phase 1 ``BeginRun`` is already committed and
+  ``m_lastTransition`` recorded; if Phase 2 throws, Phase 4 does not
+  run, the next call sees no pending transition (correct — it was
+  applied) and ``m_lastTransition`` retains its value.  A pending
+  ``EndRun`` is not consumed until Phase 4 completes, so a Phase 2/3
+  failure leaves it queued for the next ``extractData()``.
 
 Transition hooks
 ~~~~~~~~~~~~~~~~
@@ -574,9 +611,9 @@ Notes:
   identical to what the legacy ``runStatus()`` did.  Nothing new is
   cleared, nothing previously cleared is left dirty.
 * ``onBeginRun()`` and ``onEndRun()`` are ``protected virtual`` and
-  dispatched only from ``onBeforeExtract()``.  Unit tests can subclass
-  the listener and override the hooks to assert they fired with the
-  expected preconditions.
+  dispatched only from ``onBeforeExtract()`` and ``onAfterExtract()``
+  respectively.  Unit tests can subclass the listener and override the
+  hooks to assert they fired with the expected preconditions.
 * ``onRunPause()`` is ``protected virtual`` and called only from
   ``rxPacket(AnnotationPkt)`` in the background thread.  Its dispatch
   point differs from ``onBeginRun()`` / ``onEndRun()`` by design.

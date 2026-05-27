@@ -529,7 +529,13 @@ std::vector<uint8_t> buildResumePkt() {
 // Source section header (4 x uint32_t = 16 bytes):
 //   source ID (0), intra-pulse time (0), COR+TOF offset (0), bank count (1)
 // Bank section header (2 x uint32_t = 8 bytes):
-//   bank ID (0xFFFFFFFE = error/monitor bank), event count
+//   bank ID (0 = first real detector bank), event count.
+//   NB: bank IDs 0xFFFFFFFF (-1) and 0xFFFFFFFE (-2) are sentinel
+//   "error / unmapped" banks and SNSLiveEventDataListener::rxPacket
+//   (BankedEventPkt) deliberately drops their events without ever
+//   calling appendEvent() (see SNSLiveEventDataListener.cpp:432).
+//   Tests that assert getNumberEvents() > 0 therefore require a
+//   real bank ID (< 0xFFFFFFFE) here.
 // Events: pairs of (TOF u32, pixel ID u32) = 8 bytes each
 std::vector<uint8_t> buildBankedEventPkt(uint64_t pulseId, double pulseChargePc,
                                          std::vector<PixelTof> const &events) {
@@ -562,7 +568,7 @@ std::vector<uint8_t> buildBankedEventPkt(uint64_t pulseId, double pulseChargePc,
   appendU32LE(pkt, 1u);                        // bank count = 1
 
   // Bank section header
-  appendU32LE(pkt, 0xFFFFFFFEu);               // bank ID (error/monitor bank)
+  appendU32LE(pkt, 0u);                        // bank ID = 0 (first real detector bank)
   appendU32LE(pkt, nEvents);                   // event count
 
   // Events
@@ -643,9 +649,16 @@ std::vector<uint8_t> buildBeamMonitorPkt(uint64_t pulseId, uint32_t monitorId,
 // Justification: XML payload varies per call.
 //
 // Layout: header (16 bytes) + XML length (4-byte LE u32) + XML bytes + padding
-// XML = "<proposal_id>proposalId</proposal_id><title>title</title>"
+// XML = "<runinfo><proposal_id>proposalId</proposal_id><run_title>title</run_title></runinfo>"
+// The <runinfo> root element and the <run_title> child name are required by
+// SNSLiveEventDataListener::rxPacket(RunInfoPkt) — it locates the "runinfo"
+// root via Poco::XML::Document::firstChild() and then only recognises the
+// "proposal_id" and "run_title" child element names.  Producing XML without
+// the root would throw SAXParseException; using "<title>" would silently
+// leave the run-title property empty.
 std::vector<uint8_t> buildRunInfoPkt(const std::string &proposalId, const std::string &title) {
-  std::string xml = "<proposal_id>" + proposalId + "</proposal_id><title>" + title + "</title>";
+  std::string xml = "<runinfo><proposal_id>" + proposalId + "</proposal_id><run_title>" + title +
+                    "</run_title></runinfo>";
   // Pad XML to 4-byte boundary
   std::size_t xmlLen = xml.size();
   std::size_t paddedLen = (xmlLen + 3) & ~std::size_t{3};

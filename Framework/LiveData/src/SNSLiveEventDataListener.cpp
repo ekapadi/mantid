@@ -313,7 +313,8 @@ void SNSLiveEventDataListener::run() {
 
     m_isConnected = false;
 
-    m_backgroundException = std::make_shared<ADARA::invalid_packet>(e);
+    if (!m_backgroundException)
+      m_backgroundException = std::make_shared<ADARA::invalid_packet>(e);
   } catch (std::runtime_error &e) { // exception handler for generic runtime
                                     // exceptions
     g_log.fatal() << "Caught a runtime exception.\n"
@@ -321,7 +322,8 @@ void SNSLiveEventDataListener::run() {
                   << "Thread will exit.\n";
     m_isConnected = false;
 
-    m_backgroundException = std::make_shared<std::runtime_error>(e);
+    if (!m_backgroundException)
+      m_backgroundException = std::make_shared<std::runtime_error>(e);
   } catch (std::invalid_argument &e) { // TimeSeriesProperty (and possibly some
                                        // other things) can throw these errors
     g_log.fatal() << "Caught an invalid argument exception.\n"
@@ -332,20 +334,23 @@ void SNSLiveEventDataListener::run() {
                                    // handler for why we set this value.
     std::string newMsg("Invalid argument exception thrown from the background thread: ");
     newMsg += e.what();
-    m_backgroundException = std::make_shared<std::runtime_error>(newMsg);
+    if (!m_backgroundException)
+      m_backgroundException = std::make_shared<std::runtime_error>(newMsg);
   } catch (std::exception &e) { // exception handler for generic exceptions
     g_log.fatal() << "Caught an exception.\n"
                   << "Exception message: " << e.what() << ".\n"
                   << "Thread will exit.\n";
     m_isConnected = false;
 
-    m_backgroundException = std::make_shared<std::runtime_error>(e.what());
+    if (!m_backgroundException)
+      m_backgroundException = std::make_shared<std::runtime_error>(e.what());
   } catch (...) { // Default exception handler
     g_log.fatal("Uncaught exception in SNSLiveEventDataListener network read thread."
                 " Thread is exiting.");
     m_isConnected = false;
 
-    m_backgroundException = std::make_shared<std::runtime_error>("Unknown error in backgound thread");
+    if (!m_backgroundException)
+      m_backgroundException = std::make_shared<std::runtime_error>("Unknown error in backgound thread");
   }
 }
 
@@ -671,7 +676,8 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
       // complete the initialization, the extractData() function won't complete
       // successfully and onBeforeExtract() will thus never be called.
       // Since m_pauseNetRead is reset in onBeginRun()/onEndRun() (called from
-      // onBeforeExtract()), the whole live listener subsystem would deadlock.
+      // onBeforeExtract()/onAfterExtract() respectively), the whole live
+      // listener subsystem would deadlock.
       //
       // So, we can't set m_pauseNetRead.  That's OK, because we don't actually
       // have any data from a previous run that we need to keep separate from
@@ -760,7 +766,7 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
     // Because of this, however, if extractData() isn't called at least once
     // per run, the network packets may start to back up and SMS may eventually
     // disconnect us.
-    // This flag will be cleared in onEndRun() (called from onBeforeExtract()),
+    // This flag will be cleared in onEndRun() (called from onAfterExtract()),
     // which is guaranteed to be called after extractData() has returned data.
 
     m_pauseNetRead = true;
@@ -1305,7 +1311,23 @@ void SNSLiveEventDataListener::initWorkspacePart2() {
   loadInst->setProperty("Workspace", m_eventBuffer);
   loadInst->setProperty("RewriteSpectraMap", OptionalBool(false));
 
-  loadInst->execute();
+  // Wrap LoadInstrument so a malformed Geometry/BeamlineInfo packet does
+  // not just kill the background thread silently: produce a context-rich
+  // background exception that extractData() will surface to the caller.
+  // SAXParseException::what() typically yields just "SAXParseException", so
+  // the InstrumentName / XML-length context here is what makes the failure
+  // diagnosable in tests and production.
+  try {
+    loadInst->execute();
+  } catch (std::exception &e) {
+    std::ostringstream msg;
+    msg << "SNSLiveEventDataListener: LoadInstrument failed during workspace "
+           "initialization (InstrumentName='"
+        << m_instrumentName << "', InstrumentXML length=" << m_instrumentXML.size() << " bytes): " << e.what();
+    if (!m_backgroundException)
+      m_backgroundException = std::make_shared<std::runtime_error>(msg.str());
+    throw std::runtime_error(msg.str());
+  }
 
   m_requiredLogs.clear();
   // Clear the list.  If we have to initialize the workspace again,
@@ -1416,7 +1438,16 @@ std::shared_ptr<Workspace> SNSLiveEventDataListener::doExtractData() {
   static const double maxBlockTime = 10.0;
   const DateAndTime endTime = DateAndTime::getCurrentTime() + maxBlockTime;
   while ((!m_workspaceInitialized) && (DateAndTime::getCurrentTime() < endTime)) {
+    // Surface any fatal exception from the background thread (e.g. a bad
+    // instrument geometry packet that caused LoadInstrument to throw) so
+    // the caller sees the real cause instead of waiting out the timeout.
+    if (m_backgroundException) {
+      throw std::runtime_error(m_backgroundException->what());
+    }
     Poco::Thread::sleep(100); // 100 milliseconds
+  }
+  if (m_backgroundException) {
+    throw std::runtime_error(m_backgroundException->what());
   }
   if (!m_workspaceInitialized) {
     throw Exception::NotYet("The workspace has not yet been initialized.");
@@ -1500,48 +1531,56 @@ std::optional<ILiveListener::RunStatus> SNSLiveEventDataListener::lastTransition
 }
 
 // ---------------------------------------------------------------------------
-// onBeforeExtract — Phase 1 of the extractData() commit point
+// onBeforeExtract / onAfterExtract — extractData() commit points
 // ---------------------------------------------------------------------------
+// BeginRun is dispatched from onBeforeExtract() so the new run's workspace
+// initialisation is in place before doExtractData() snapshots it.  EndRun is
+// dispatched from onAfterExtract() so doExtractData() can harvest the
+// finishing run's accumulated events before onEndRun() resets the buffer.
 
 void SNSLiveEventDataListener::onBeforeExtract() {
-  // Dequeue the pending transition atomically.
   std::optional<RunStatus> pending;
   {
     std::lock_guard<std::mutex> scopedLock(m_mutex);
     pending = m_pendingTransition;
-    m_pendingTransition.reset();
   }
-
-  if (!pending)
-    return; // Nothing to commit; leave m_lastTransition intact (C1 fix).
-
-  // Dispatch to the appropriate hook.  The hooks acquire m_mutex themselves.
-  if (*pending == BeginRun)
+  if (pending && *pending == BeginRun) {
+    {
+      std::lock_guard<std::mutex> scopedLock(m_mutex);
+      m_pendingTransition.reset();
+    }
     onBeginRun();
-  else if (*pending == EndRun)
-    onEndRun();
-
-  // Record the transition for lastTransition() queries.
-  {
-    std::lock_guard<std::mutex> scopedLock(m_mutex);
-    m_lastTransition = pending;
+    {
+      std::lock_guard<std::mutex> scopedLock(m_mutex);
+      m_lastTransition = BeginRun;
+    }
+    m_pauseNetRead = false;
   }
-
-  // Release the background reader (was blocked by m_pauseNetRead since the
-  // transition was queued).
-  m_pauseNetRead = false;
 }
 
 void SNSLiveEventDataListener::onAfterExtract() {
-  std::lock_guard<std::mutex> scopedLock(m_mutex);
-  m_lastTransition.reset();
+  std::optional<RunStatus> pending;
+  {
+    std::lock_guard<std::mutex> scopedLock(m_mutex);
+    pending = m_pendingTransition;
+    m_lastTransition.reset();
+  }
+  if (pending && *pending == EndRun) {
+    {
+      std::lock_guard<std::mutex> scopedLock(m_mutex);
+      m_pendingTransition.reset();
+      m_lastTransition = EndRun;
+    }
+    onEndRun();
+    m_pauseNetRead = false;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Run-state transition hooks
 // ---------------------------------------------------------------------------
-// Hooks acquire m_mutex themselves (call site is now onBeforeExtract(),
-// which does not hold the lock when it calls them).
+// Hooks acquire m_mutex themselves.  onBeginRun() is called from
+// onBeforeExtract(); onEndRun() is called from onAfterExtract().
 
 void SNSLiveEventDataListener::onBeginRun() {
   std::lock_guard<std::mutex> scopedLock(m_mutex);

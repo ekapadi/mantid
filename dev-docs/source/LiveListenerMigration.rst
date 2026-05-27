@@ -262,8 +262,10 @@ Listeners that need to react to run boundaries should override the
        this point.
    * - ``onEndRun()``
      - foreground
-     - Called from ``onBeforeExtract()`` when an ``EndRun``
-       transition is pending.
+     - Called from ``onAfterExtract()`` when an ``EndRun``
+       transition is pending.  Deferred to after ``doExtractData()``
+       so the finishing run's accumulated events are harvested before
+       the workspace buffer is reset.
    * - ``onRunPause(bool paused)``
      - background
      - Called directly from the background reader when a DAS
