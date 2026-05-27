@@ -643,9 +643,16 @@ std::vector<uint8_t> buildBeamMonitorPkt(uint64_t pulseId, uint32_t monitorId,
 // Justification: XML payload varies per call.
 //
 // Layout: header (16 bytes) + XML length (4-byte LE u32) + XML bytes + padding
-// XML = "<proposal_id>proposalId</proposal_id><title>title</title>"
+// XML = "<runinfo><proposal_id>proposalId</proposal_id><run_title>title</run_title></runinfo>"
+// The <runinfo> root element and the <run_title> child name are required by
+// SNSLiveEventDataListener::rxPacket(RunInfoPkt) — it locates the "runinfo"
+// root via Poco::XML::Document::firstChild() and then only recognises the
+// "proposal_id" and "run_title" child element names.  Producing XML without
+// the root would throw SAXParseException; using "<title>" would silently
+// leave the run-title property empty.
 std::vector<uint8_t> buildRunInfoPkt(const std::string &proposalId, const std::string &title) {
-  std::string xml = "<proposal_id>" + proposalId + "</proposal_id><title>" + title + "</title>";
+  std::string xml = "<runinfo><proposal_id>" + proposalId + "</proposal_id><run_title>" + title +
+                    "</run_title></runinfo>";
   // Pad XML to 4-byte boundary
   std::size_t xmlLen = xml.size();
   std::size_t paddedLen = (xmlLen + 3) & ~std::size_t{3};

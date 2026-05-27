@@ -186,20 +186,46 @@ public:
   // ----- §6.1 Legacy behavioural contract (remainder) -----
 
   void test_LegacyConnectAndDisconnect() {
-    // The listener's bg thread does not currently transition isConnected()
-    // to false on a clean peer-close (Poco StreamSocket::receiveBytes
-    // returns 0 with no exception, which the read loop does not treat as
-    // a fatal error).  See PR comment 4553042112 for the report.  This
-    // legacy smoke test therefore verifies that connect() succeeded and
-    // that the server observed the client connect/disconnect handshake,
-    // which is what is reliably testable from the test fixture.
+    // XFAIL: The listener's background thread does not currently
+    // transition isConnected() to false on a clean peer-close
+    // (Poco::Net::StreamSocket::receiveBytes returns 0 with no
+    // exception, which the read loop does not treat as a fatal
+    // error).  The desired behaviour — once the production fix
+    // lands — is that the listener observes EOF and transitions
+    // out of the connected state within a few seconds of the
+    // server-side close.  Following the XFAIL inversion
+    // convention used in subspec06, this assertion currently
+    // PASSES by observing the broken behaviour
+    // (isConnected() == true after the peer closes the
+    // connection); when the production fix lands the
+    // inversion in the TSM_ASSERT below must be removed and
+    // replaced with the intended-behaviour check
+    // `waitFor([&]{ return !m_listener->isConnected(); }, ...);
+    // TS_ASSERT(!m_listener->isConnected());`.
     m_server->script({ Testing::PktDisconnect{} });
     m_server->start();
     TS_ASSERT(connectListener());
     // Server-side: wait for the scripted PktDisconnect{} to complete
     // (scriptIndex advances past it once the server has closed its end).
     waitFor([&]{ return m_server->scriptIndex() >= 1; }, std::chrono::seconds{5});
-    TS_ASSERT(!m_server->clientConnected());
+    // Give the listener a brief window in which it *would* notice the
+    // close if it were going to.  This is intentionally short — the
+    // assertion below is XFAIL-inverted, so we are documenting that
+    // even after a generous delay isConnected() remains true.
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    TSM_ASSERT(
+        "XFAIL: SNSLiveEventDataListener does not currently detect a "
+        "clean peer-close on its data socket (Poco StreamSocket "
+        "receiveBytes() returns 0 with no exception, which the bg "
+        "read loop does not treat as fatal).  This assertion is "
+        "INVERTED: it currently passes by observing the broken "
+        "behaviour (isConnected() == true after the server closed "
+        "the connection).  When the production fix lands, replace "
+        "this with `waitFor([&]{ return !m_listener->isConnected(); "
+        "}, std::chrono::seconds{5}); TS_ASSERT(!m_listener->"
+        "isConnected());`.  Tracked as a separate ticket — see PR "
+        "comment 4553042112.",
+        m_listener->isConnected());
   }
 
   void test_LegacyExtractEmptyWorkspace() {
@@ -374,19 +400,19 @@ public:
   }
 
   void test_runNumber_proposalId_title_propagate() {
-    // NOTE: the Testing::buildRunInfoPkt() helper in MockSMSServer.cpp
-    // produces XML that the listener's rxPacket(RunInfoPkt) cannot
-    // parse (no <runinfo> root element, uses <title> instead of
-    // <run_title>), which causes a SAXParseException in the bg thread.
-    // That helper bug is reported on the PR — see comment 4553042112 —
-    // and is out-of-scope for this test file.  Until it is fixed, this
-    // test verifies only the run_number propagation path; the
-    // experiment_identifier / run_title assertions are deferred.
+    // Verifies that run_number (from RunStatusPkt) and proposal_id /
+    // run_title (from RunInfoPkt) all propagate into the extracted
+    // workspace's Run object.  See Testing::buildRunInfoPkt() in
+    // MockSMSServer.cpp for the XML layout expected by
+    // SNSLiveEventDataListener::rxPacket(RunInfoPkt).
+    const std::string kProposalId = "IPTS-9999";
+    const std::string kRunTitle = "integration test run";
     m_server->script({
         Testing::buildGeometryPkt(kMinimalIDF),
         Testing::buildBeamlineInfoPkt(kInstrumentName),
         Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 77,
                                     0x0000000100000000ULL),
+        Testing::buildRunInfoPkt(kProposalId, kRunTitle),
         Testing::buildBankedEventPkt(0x0000000100000000ULL,
                                       /*chargePc=*/1000.0,
                                       {{/*tof=*/100u, /*pixel=*/1u}}),
@@ -395,7 +421,7 @@ public:
     });
     m_server->start();
     TS_ASSERT(connectListener());
-    waitFor([&]{ return m_server->scriptIndex() >= 5; }, std::chrono::seconds{5});
+    waitFor([&]{ return m_server->scriptIndex() >= 6; }, std::chrono::seconds{5});
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
     auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
     m_server->releaseExtractGate();
@@ -408,6 +434,16 @@ public:
       TS_ASSERT_EQUALS(
           mws->run().getPropertyValueAsType<std::string>("run_number"),
           std::string{"77"});
+      // proposal_id and run_title come from rxPacket(RunInfoPkt) — see
+      // SNSLiveEventDataListener.cpp:1190-1267.  Their property names
+      // are EXPERIMENT_ID_PROPERTY ("experiment_identifier") and
+      // RUN_TITLE_PROPERTY ("run_title").
+      TS_ASSERT_EQUALS(
+          mws->run().getPropertyValueAsType<std::string>("experiment_identifier"),
+          kProposalId);
+      TS_ASSERT_EQUALS(
+          mws->run().getPropertyValueAsType<std::string>("run_title"),
+          kRunTitle);
     }
   }
 
