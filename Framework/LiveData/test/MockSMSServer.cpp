@@ -529,7 +529,13 @@ std::vector<uint8_t> buildResumePkt() {
 // Source section header (4 x uint32_t = 16 bytes):
 //   source ID (0), intra-pulse time (0), COR+TOF offset (0), bank count (1)
 // Bank section header (2 x uint32_t = 8 bytes):
-//   bank ID (0xFFFFFFFE = error/monitor bank), event count
+//   bank ID (0 = first real detector bank), event count.
+//   NB: bank IDs 0xFFFFFFFF (-1) and 0xFFFFFFFE (-2) are sentinel
+//   "error / unmapped" banks and SNSLiveEventDataListener::rxPacket
+//   (BankedEventPkt) deliberately drops their events without ever
+//   calling appendEvent() (see SNSLiveEventDataListener.cpp:432).
+//   Tests that assert getNumberEvents() > 0 therefore require a
+//   real bank ID (< 0xFFFFFFFE) here.
 // Events: pairs of (TOF u32, pixel ID u32) = 8 bytes each
 std::vector<uint8_t> buildBankedEventPkt(uint64_t pulseId, double pulseChargePc,
                                          std::vector<PixelTof> const &events) {
@@ -562,7 +568,7 @@ std::vector<uint8_t> buildBankedEventPkt(uint64_t pulseId, double pulseChargePc,
   appendU32LE(pkt, 1u);                        // bank count = 1
 
   // Bank section header
-  appendU32LE(pkt, 0xFFFFFFFEu);               // bank ID (error/monitor bank)
+  appendU32LE(pkt, 0u);                        // bank ID = 0 (first real detector bank)
   appendU32LE(pkt, nEvents);                   // event count
 
   // Events
