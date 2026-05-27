@@ -18,6 +18,7 @@
 #include <cxxtest/TestSuite.h>
 
 #include "MantidAPI/ILiveListener.h"
+#include "MantidAPI/Run.h"
 #include "MantidAPI/Workspace_fwd.h"
 #include "MantidDataObjects/EventWorkspace.h"
 #include "MantidKernel/ConfigService.h"
