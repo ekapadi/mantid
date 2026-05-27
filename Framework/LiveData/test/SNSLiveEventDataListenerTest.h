@@ -356,6 +356,45 @@ public:
 
   // ----- (additional test_* methods added in subspec05 / 06) -----
 
+  /// Regression: a malformed instrument geometry XML must surface a
+  /// background exception via extractData() instead of merely letting
+  /// the bg thread die and the caller spin for 10 s before getting
+  /// "Exception::NotYet".  See PR comment 4550830796.
+  void test_BadGeometryXml_surfacesAsExtractDataException() {
+    // Deliberately invalid IDF: well-formed XML, but not a Mantid instrument
+    // definition.  LoadInstrument's parser will reject this and throw a
+    // SAXParseException from initWorkspacePart2().
+    const std::string kBadIDF = "<not-a-valid-instrument/>";
+    m_server->script({
+        Testing::buildGeometryPkt(kBadIDF),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+
+    // Wait for the bg thread to have consumed both packets and attempted
+    // initWorkspacePart2() (which must fail).
+    waitFor([&] { return !m_listener->isConnected(); }, std::chrono::seconds{5});
+
+    // The caller must see a real exception, NOT Exception::NotYet, and the
+    // message must carry our InstrumentName context so the failure is
+    // diagnosable in production.
+    bool threw = false;
+    std::string what;
+    try {
+      m_listener->extractData();
+    } catch (const std::exception &e) {
+      threw = true;
+      what = e.what();
+    }
+    TSM_ASSERT("extractData() must throw when bg thread aborted in init", threw);
+    TSM_ASSERT_DIFFERS("extractData() must not return Exception::NotYet here",
+                       what.find("LoadInstrument failed"), std::string::npos);
+    TSM_ASSERT_DIFFERS("error message must include InstrumentName context",
+                       what.find(kInstrumentName), std::string::npos);
+  }
+
 private:
   // Each behavioural test calls this AFTER queuing the server script.
   // Returns true on success.  Builds the UDS SocketAddress via the
