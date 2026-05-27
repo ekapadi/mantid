@@ -60,8 +60,8 @@ constexpr const char *kInstrumentName = "xmlInst";
 /// initWorkspacePart2() raises a SAXParseException, the listener's
 /// background thread exits, and every behavioural test downstream of the
 /// geometry+beamline handshake stalls in waitFor() or deadlocks on
-/// extractData().  Use this IDF (with idlist 1..10, covering pixel=1 from
-/// buildBankedEventPkt) via Testing::buildGeometryPkt() instead.
+/// extractData().  Use this IDF (single pixel with id=1, covering pixel=1
+/// from buildBankedEventPkt) via Testing::buildGeometryPkt() instead.
 inline const std::string kMinimalIDF =
     "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>"
     "<instrument name=\"xmlInst\" valid-from=\"1900-01-31 23:59:59\" "
@@ -70,7 +70,7 @@ inline const std::string kMinimalIDF =
     "<defaults />"
     "<component type=\"panel\" idlist=\"idlist_for_bank1\">"
     "<location r=\"0\" t=\"0\" rot=\"0\" axis-x=\"0\" axis-y=\"1\" "
-    "axis-z=\"0\" name=\"bank1\" xpixels=\"3\" ypixels=\"2\" />"
+    "axis-z=\"0\" name=\"bank1\" />"
     "</component>"
     "<type is=\"detector\" name=\"panel\">"
     "<properties/>"
@@ -83,7 +83,7 @@ inline const std::string kMinimalIDF =
     "<algebra val=\"pixel-shape\"/>"
     "</type>"
     "<idlist idname=\"idlist_for_bank1\">"
-    "<id start=\"1\" end=\"10\" />"
+    "<id start=\"1\" end=\"1\" />"
     "</idlist>"
     "</instrument>";
 
