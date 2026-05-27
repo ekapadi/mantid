@@ -19,6 +19,7 @@
 
 #include "MantidAPI/ILiveListener.h"
 #include "MantidAPI/Workspace_fwd.h"
+#include "MantidDataObjects/EventWorkspace.h"
 #include "MantidKernel/ConfigService.h"
 #include "MantidLiveData/SNSLiveEventDataListener.h"
 #include "MantidTypes/Core/DateAndTime.h"
@@ -140,7 +141,176 @@ public:
     TS_ASSERT_EQUALS(m_listener->runStatus(), API::ILiveListener::NoRun);
   }
 
-  // ----- (additional test_* methods added in subspec04 / 05 / 06) -----
+  // ----- §6.1 Legacy behavioural contract (remainder) -----
+
+  void test_LegacyConnectAndDisconnect() {
+    m_server->script({ Testing::PktDisconnect{} });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&]{ return !m_listener->isConnected(); }, std::chrono::seconds{5});
+    TS_ASSERT(!m_listener->isConnected());
+  }
+
+  void test_LegacyExtractEmptyWorkspace() {
+    m_server->script({
+        PKT(geometryPacketV0),
+        PKT(beamlineInfoPacketV1),
+        Testing::PktWaitForExtract{},
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&]{ return m_server->scriptIndex() >= 2; }, std::chrono::seconds{5});
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate();
+    TS_ASSERT_DIFFERS(ws, nullptr);
+    TS_ASSERT_EQUALS(m_listener->runStatus(), API::ILiveListener::NoRun);
+  }
+
+  void test_LegacyConnectionStatusTransitions() {
+    m_server->script({
+        PKT(geometryPacketV0),
+        PKT(beamlineInfoPacketV1),
+        Testing::PktWaitForExtract{},
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&]{ return m_server->scriptIndex() >= 2; }, std::chrono::seconds{5});
+    // After receiving Geometry and BeamlineInfo, listener is Connected.
+    TS_ASSERT_EQUALS(m_listener->listenerState(),
+                     API::ILiveListener::ListenerState::Connected);
+    m_server->releaseExtractGate();
+  }
+
+  // ----- §6.2 Connection & mid-run join -----
+
+  void test_connect_succeeds_over_uds() {
+    m_server->script({
+        PKT(geometryPacketV0),
+        PKT(beamlineInfoPacketV1),
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&]{ return m_server->scriptIndex() >= 2; }, std::chrono::seconds{5});
+    TS_ASSERT(m_server->clientConnected());
+    TS_ASSERT_LESS_THAN(0u, m_server->bytesSent());
+  }
+
+  void test_midRunJoin_doesNotWipeWorkspaceInit() {
+    // NEW_RUN arrives BEFORE geometry/beamline metadata — mid-run join.
+    m_server->script({
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN,
+                                    /*runNum=*/100,
+                                    /*pulseId=*/0x0000000100000000ULL),
+        PKT(geometryPacketV0),
+        PKT(beamlineInfoPacketV1),
+        PKT(bankedEventPacketV1),
+        Testing::PktWaitForExtract{},
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&]{ return m_server->scriptIndex() >= 4; }, std::chrono::seconds{5});
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate();
+    TS_ASSERT_DIFFERS(ws, nullptr);
+    // The listener must report Running after a NEW_RUN + events.
+    TS_ASSERT_EQUALS(m_listener->runStatus(),
+                     API::ILiveListener::Running);
+    // Workspace must not be uninitialised (no empty instrument).
+    auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
+    TS_ASSERT_DIFFERS(ews, nullptr);
+    TS_ASSERT_DIFFERS(ews->getInstrument()->getName(), std::string{});
+  }
+
+  // ----- §6.3 Single & full run lifecycle -----
+
+  void test_singleRun_extractsEventsAndRunNumber() {
+    m_server->script({
+        PKT(geometryPacketV0),
+        PKT(beamlineInfoPacketV1),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 42,
+                                    0x0000000100000000ULL),
+        Testing::buildBankedEventPkt(0x0000000100000000ULL,
+                                      /*chargePc=*/1000.0,
+                                      {{/*tof=*/100u, /*pixel=*/1u}}),
+        Testing::PktWaitForExtract{},
+        Testing::buildRunStatusPkt(ADARA::RunStatus::END_RUN, 42,
+                                    0x0000000200000000ULL),
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&]{ return m_server->scriptIndex() >= 4; }, std::chrono::seconds{5});
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate();
+    TS_ASSERT_DIFFERS(ws, nullptr);
+    auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
+    TS_ASSERT_DIFFERS(ews, nullptr);
+    TS_ASSERT_EQUALS(
+        ews->run().getPropertyValueAsType<int>("run_number"), 42);
+    TS_ASSERT_LESS_THAN(0, static_cast<int>(ews->getNumberEvents()));
+  }
+
+  void test_fullRun_beginExtractEndExtract() {
+    m_server->script({
+        PKT(geometryPacketV0),
+        PKT(beamlineInfoPacketV1),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 55,
+                                    0x0000000100000000ULL),
+        PKT(bankedEventPacketV1),
+        Testing::PktWaitForExtract{},      // gate 1
+        Testing::buildRunStatusPkt(ADARA::RunStatus::END_RUN, 55,
+                                    0x0000000300000000ULL),
+        Testing::PktWaitForExtract{},      // gate 2
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&]{ return m_server->scriptIndex() >= 4; }, std::chrono::seconds{5});
+    // First extract
+    auto ws1 = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    TS_ASSERT_EQUALS(m_listener->runStatus(), API::ILiveListener::Running);
+    m_server->releaseExtractGate(); // release gate 1
+    waitFor([&]{ return m_server->scriptIndex() >= 6; }, std::chrono::seconds{5});
+    // Second extract
+    auto ws2 = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate(); // release gate 2
+    TS_ASSERT_DIFFERS(ws1, nullptr);
+    TS_ASSERT_DIFFERS(ws2, nullptr);
+    TS_ASSERT_EQUALS(m_listener->runStatus(),
+                     API::ILiveListener::RunEnded);
+  }
+
+  void test_runNumber_proposalId_title_propagate() {
+    m_server->script({
+        PKT(geometryPacketV0),
+        PKT(beamlineInfoPacketV1),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 77,
+                                    0x0000000100000000ULL),
+        Testing::buildRunInfoPkt("IPTS-12345", "My Test Title"),
+        PKT(bankedEventPacketV1),
+        Testing::PktWaitForExtract{},
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&]{ return m_server->scriptIndex() >= 5; }, std::chrono::seconds{5});
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate();
+    TS_ASSERT_DIFFERS(ws, nullptr);
+    const auto &run = ws->run();
+    TS_ASSERT_EQUALS(
+        run.getPropertyValueAsType<std::string>("experiment_identifier"),
+        std::string{"IPTS-12345"});
+    TS_ASSERT_EQUALS(
+        run.getPropertyValueAsType<std::string>("run_title"),
+        std::string{"My Test Title"});
+  }
+
+  // ----- (additional test_* methods added in subspec05 / 06) -----
 
 private:
   // Each behavioural test calls this AFTER queuing the server script.
