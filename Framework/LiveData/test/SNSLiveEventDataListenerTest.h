@@ -48,6 +48,45 @@ using namespace Mantid::LiveData;
 
 namespace {
 
+/// Instrument name advertised in the BeamlineInfo packet.  Must match the
+/// `name` attribute of @ref kMinimalIDF so that LoadInstrument's IDS cache
+/// keys consistently across tests.
+constexpr const char *kInstrumentName = "xmlInst";
+
+/// Minimal but VALID Mantid IDF used by the integration tests.  The ADARA
+/// `geometryPacketV0` fixture in ADARAPackets.h carries the placeholder XML
+/// `<instrument>VACUO</instrument>`, which is well-formed XML but is NOT a
+/// valid Mantid instrument definition; feeding it to LoadInstrument inside
+/// initWorkspacePart2() raises a SAXParseException, the listener's
+/// background thread exits, and every behavioural test downstream of the
+/// geometry+beamline handshake stalls in waitFor() or deadlocks on
+/// extractData().  Use this IDF (with idlist 1..10, covering pixel=1 from
+/// buildBankedEventPkt) via Testing::buildGeometryPkt() instead.
+inline const std::string kMinimalIDF =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>"
+    "<instrument name=\"xmlInst\" valid-from=\"1900-01-31 23:59:59\" "
+    "valid-to=\"2100-01-31 23:59:59\" "
+    "last-modified=\"2010-10-06T16:21:30\">"
+    "<defaults />"
+    "<component type=\"panel\" idlist=\"idlist_for_bank1\">"
+    "<location r=\"0\" t=\"0\" rot=\"0\" axis-x=\"0\" axis-y=\"1\" "
+    "axis-z=\"0\" name=\"bank1\" xpixels=\"3\" ypixels=\"2\" />"
+    "</component>"
+    "<type is=\"detector\" name=\"panel\">"
+    "<properties/>"
+    "<component type=\"pixel\">"
+    "<location y=\"1\" x=\"1\"/>"
+    "</component>"
+    "</type>"
+    "<type is=\"detector\" name=\"pixel\">"
+    "<cuboid id=\"pixel-shape\" />"
+    "<algebra val=\"pixel-shape\"/>"
+    "</type>"
+    "<idlist idname=\"idlist_for_bank1\">"
+    "<id start=\"1\" end=\"10\" />"
+    "</idlist>"
+    "</instrument>";
+
 /// Spin-wait up to @p timeout, polling every @p poll, until @p pred
 /// returns true.  On timeout calls TS_FAIL and returns false.
 template <typename Pred>
@@ -156,8 +195,8 @@ public:
 
   void test_LegacyExtractEmptyWorkspace() {
     m_server->script({
-        PKT(geometryPacketV0),
-        PKT(beamlineInfoPacketV1),
+        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
         Testing::PktWaitForExtract{},
         Testing::PktDisconnect{},
     });
@@ -172,8 +211,8 @@ public:
 
   void test_LegacyConnectionStatusTransitions() {
     m_server->script({
-        PKT(geometryPacketV0),
-        PKT(beamlineInfoPacketV1),
+        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
         Testing::PktWaitForExtract{},
         Testing::PktDisconnect{},
     });
@@ -190,8 +229,8 @@ public:
 
   void test_connect_succeeds_over_uds() {
     m_server->script({
-        PKT(geometryPacketV0),
-        PKT(beamlineInfoPacketV1),
+        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
         Testing::PktDisconnect{},
     });
     m_server->start();
@@ -207,8 +246,8 @@ public:
         Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN,
                                     /*runNum=*/100,
                                     /*pulseId=*/0x0000000100000000ULL),
-        PKT(geometryPacketV0),
-        PKT(beamlineInfoPacketV1),
+        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
         PKT(bankedEventPacketV1),
         Testing::PktWaitForExtract{},
         Testing::PktDisconnect{},
@@ -232,8 +271,8 @@ public:
 
   void test_singleRun_extractsEventsAndRunNumber() {
     m_server->script({
-        PKT(geometryPacketV0),
-        PKT(beamlineInfoPacketV1),
+        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
         Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 42,
                                     0x0000000100000000ULL),
         Testing::buildBankedEventPkt(0x0000000100000000ULL,
@@ -259,8 +298,8 @@ public:
 
   void test_fullRun_beginExtractEndExtract() {
     m_server->script({
-        PKT(geometryPacketV0),
-        PKT(beamlineInfoPacketV1),
+        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
         Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 55,
                                     0x0000000100000000ULL),
         PKT(bankedEventPacketV1),
@@ -289,8 +328,8 @@ public:
 
   void test_runNumber_proposalId_title_propagate() {
     m_server->script({
-        PKT(geometryPacketV0),
-        PKT(beamlineInfoPacketV1),
+        Testing::buildGeometryPkt(kMinimalIDF),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
         Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 77,
                                     0x0000000100000000ULL),
         Testing::buildRunInfoPkt("IPTS-12345", "My Test Title"),
