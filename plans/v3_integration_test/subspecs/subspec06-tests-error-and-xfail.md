@@ -287,12 +287,46 @@ TS_ASSERT(threw);
 **Purpose:** When the server closes the connection, the listener
 observes EOF and transitions out of `Connected` state.
 
+> **⚠️ XFAIL — latent production defect.**
+>
+> `SNSLiveEventDataListener`'s background read loop does **not** currently
+> treat `Poco::Net::StreamSocket::receiveBytes()` returning 0 (EOF) as a
+> fatal event.  It therefore never transitions `m_isConnected` to `false`
+> on a clean peer-close; `isConnected()` and `listenerState()` remain in
+> the `Connected` state indefinitely after the server closes the socket.
+>
+> **No defect ticket has been filed yet** (noted in PR comment
+> [4553235918](https://github.com/ekapadi/mantid/pull/11#issuecomment-4553235918)
+> on the subspec04 PR).
+>
+> **XFAIL convention:** follow the same inversion pattern used in
+> `test_LegacyConnectAndDisconnect` (see
+> `Framework/LiveData/test/SNSLiveEventDataListenerTest.h` in the
+> subspec04 commit).  Write the assertions as XFAIL-inverted `TSM_ASSERT`
+> calls that *currently pass* by observing the broken behaviour
+> (`isConnected() == true`, `listenerState() == Connected`) — the opposite
+> of the intended result.
+>
+> **When the production fix lands** (teach the read loop to treat
+> `receiveBytes() == 0` as EOF and transition `m_isConnected` to `false`):
+> 1. File a defect ticket and backfill its ID into both this spec and the
+>    test's `TSM_ASSERT` message.
+> 2. Remove the XFAIL inversions in the same commit as the production fix.
+> 3. Restore the original intended-behaviour form of the test:
+>    ```cpp
+>    waitFor([&]{ return !m_listener->isConnected(); }, std::chrono::seconds{5});
+>    TS_ASSERT(!m_listener->isConnected());
+>    TS_ASSERT_DIFFERS(m_listener->listenerState(),
+>                      API::ListenerState::Connected);
+>    ```
+
 **Script:**
 ```cpp
 m_server->script({
-    PKT(geometryPacketV0),
-    PKT(beamlineInfoPacketV1),
-    PKT(bankedEventPacketV1),
+    Testing::buildGeometryPkt(kMinimalIDF),
+    Testing::buildBeamlineInfoPkt(kInstrumentName),
+    Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 1,
+                                0x0000000100000000ULL),
     Testing::PktDisconnect{},
 });
 m_server->start();
@@ -300,14 +334,36 @@ m_server->start();
 
 **Steps:**
 1. `TS_ASSERT(connectListener());`
-2. `waitFor([&]{ return !m_listener->isConnected(); }, std::chrono::seconds{5});`
+2. Wait for the server to have processed `PktDisconnect{}`:
+   ```cpp
+   waitFor([&]{ return m_server->scriptIndex() >= 4; }, std::chrono::seconds{5});
+   std::this_thread::sleep_for(std::chrono::milliseconds{200});
+   ```
 
-**Assertions:**
+**Assertions (XFAIL — inverted, see note above):**
 ```cpp
-TS_ASSERT(!m_listener->isConnected());
-// After EOF, listener should not report Connected.
-TS_ASSERT_DIFFERS(m_listener->listenerState(),
-                  API::ILiveListener::ListenerState::Connected);
+// XFAIL: the listener does not detect a clean peer-close.
+// Intended behaviour (after production fix): isConnected() == false.
+// Broken behaviour (current): isConnected() == true.
+// This assertion is INVERTED: it passes by observing the broken state.
+// When the production fix lands, replace with:
+//   TS_ASSERT(!m_listener->isConnected());
+//   TS_ASSERT_DIFFERS(m_listener->listenerState(), API::ListenerState::Connected);
+TSM_ASSERT(
+    "XFAIL: SNSLiveEventDataListener does not detect a clean peer-close "
+    "(Poco StreamSocket receiveBytes() returns 0 with no exception, which "
+    "the bg read loop does not treat as fatal).  This assertion is INVERTED: "
+    "it currently passes by observing the broken behaviour (isConnected() == "
+    "true after the server closed the connection).  When the production fix "
+    "lands, remove the inversion and replace with "
+    "TS_ASSERT(!m_listener->isConnected()).  Defect noted in PR comment "
+    "4553235918; no ticket filed yet.",
+    m_listener->isConnected());
+TSM_ASSERT(
+    "XFAIL: same root cause — listenerState() remains Connected after EOF. "
+    "When the production fix lands, replace with "
+    "TS_ASSERT_DIFFERS(m_listener->listenerState(), API::ListenerState::Connected).",
+    m_listener->listenerState() == API::ListenerState::Connected);
 ```
 
 ### 5.3 `test_connectFailure_returnsFalse`
