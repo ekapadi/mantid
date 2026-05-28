@@ -493,17 +493,27 @@ Ported from `SNSLiveEventDataListenerLegacyTest.h` with the
   to take the NotYet path (no Geometry yet) and asserts `lastTransition()`
   still reports the value set by the previous successful extract.
 
-### 6.5 Back-pressure single-slot invariant — 2 tests
+### 6.5 Back-pressure observables — 2 tests
 
-Covers `SNSLiveEventDataListener.cpp:646-652, 738-743`.
+The production single-slot throws at
+`SNSLiveEventDataListener.cpp:651-655, 744-748` are unreachable over a
+real socket (back-pressure via `m_pauseNetRead` prevents the second
+RunStatus packet from being parsed while one is pending). These tests
+verify the *observable consequences* of the back-pressure mechanism.
+The production throws are exercised by unit tests in
+`SNSLiveEventDataListenerNoNetworkTest`.
 
-- `test_doubleBeginRun_violatesSingleSlot_throws` — script:
-  NEW_RUN(1), Geometry, BeamlineInfo, BankedEvent, NEW_RUN(2) **without
-  an intervening** `extractData()`. Asserts the second NEW_RUN raises
-  `std::runtime_error` from the background thread (surfaced via
-  `m_backgroundException` on next `runState()` / `extractData()` call).
-- `test_endRunWhilePending_violatesSingleSlot_throws` — analogous for
-  NEW_RUN followed by END_RUN without intervening extract.
+- `test_doubleBeginRun_surfacesError_viaBackPressureCascade` — script:
+  Geometry, BeamlineInfo, NEW_RUN(1), BankedEvent, NEW_RUN(2) **without
+  an intervening** `extractData()`. NEW_RUN(1) initialises workspace via
+  white-lie path; NEW_RUN(2) queues `BeginRun` and sets back-pressure.
+  `extractData()` dispatches `onBeginRun()` which clears geometry state;
+  `doExtractData()` then throws `NotYet` after 10 s. Error is surfaced
+  as thrown exception or `ListenerState::Error`.
+- `test_newRunEndRun_backPressureProducesReadWaitThenCleanEndRun` —
+  NEW_RUN (white-lie path, no `m_pendingTransition` set) + END_RUN
+  (sets `m_pendingTransition=EndRun`, `m_pauseNetRead=true`). Asserts
+  `listenerState()==ReadWait` then successful extract with `EndRun`.
 
 ### 6.6 Deferred-run-details invariant — **delegated**
 

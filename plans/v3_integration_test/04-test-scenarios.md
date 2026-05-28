@@ -1,9 +1,10 @@
 # Sub-spec 04 — Test Scenarios
 
-**Part of:** [`00-index.md`](00-index.md) (master)  
+**Part of:** [`00-index.md`](00-index.md) (master)
 **Agent read-order:** Read last, after all other sub-specs.
 
 Shorthand used in script examples:
+
 - `PKT(name)` = `std::vector<uint8_t>(name, name + sizeof(name))` using arrays
   from `ADARAPackets.h`.
 - `BLD_RUN(status, num, pulseId)` = `Testing::buildRunStatusPkt(status, num, pulseId)`.
@@ -14,7 +15,7 @@ Shorthand used in script examples:
 `pulseId` values are 64-bit: `(seconds << 32) | nanos`.
 Example: pulse at t=1 s = `0x0000000100000000ULL`.
 
----
+______________________________________________________________________
 
 ## 5. Test fixture
 
@@ -144,32 +145,34 @@ class SNSLiveEventDataListenerTest : public CxxTest::TestSuite {};
 ```
 
 Notes:
+
 - **No listener constructed in the fixture constructor.** Each test calls
   `connectListener()` after queuing the script, to give the test full control
-  over connection ordering.  Some tests (§6.9) want to drive `connect()`
+  over connection ordering. Some tests (§6.9) want to drive `connect()`
   against a server that is *not* yet listening.
 - **`connectListener()` calls `connect()` first, then `start()`.** This is
   the required lifecycle: the socket must be connected before the background
-  thread can begin reading.  See [`01-uds-transport.md §3.5`](01-uds-transport.md).
+  thread can begin reading. See [`01-uds-transport.md §3.5`](01-uds-transport.md).
 - Do **not** set `SNSLiveEventDataListener.testAddress` config key; the UDS
-  `SocketAddress` is passed directly.  See [`01-uds-transport.md §3.4`](01-uds-transport.md).
+  `SocketAddress` is passed directly. See [`01-uds-transport.md §3.4`](01-uds-transport.md).
 
----
+______________________________________________________________________
 
 ## 6. Test catalogue
 
-22 tests, organised by area.  Each test description has:
+22 tests, organised by area. Each test description has:
+
 1. **Purpose** — what invariant it covers
-2. **Script** — what the `MockSMSServer` sends, in order
-3. **Steps** — what the test code does
-4. **Assertions** — what is checked
+1. **Script** — what the `MockSMSServer` sends, in order
+1. **Steps** — what the test code does
+1. **Assertions** — what is checked
 
 ### 6.1 Legacy behavioural contract (preserved, de-flaked) — 4 tests
 
 Ported from `SNSLiveEventDataListenerLegacyTest.h` with the 10 000-iteration
 polling loop and `use_count()` race replaced by `waitFor(pred, 5s)`.
 
----
+______________________________________________________________________
 
 #### `test_LegacyConstruction_initialState`
 
@@ -179,17 +182,19 @@ polling loop and `use_count()` race replaced by `waitFor(pred, 5s)`.
 **Script:** none (server not started).
 
 **Steps:**
+
 1. Construct `m_listener = std::make_unique<SNSLiveEventDataListener>()` directly
    (do not call `connectListener()`).
-2. Query initial state.
+1. Query initial state.
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT(!m_listener->isConnected());
 TS_ASSERT_EQUALS(m_listener->runStatus(), ILiveListener::NoRun);
 ```
 
----
+______________________________________________________________________
 
 #### `test_LegacyConnectAndDisconnect`
 
@@ -197,21 +202,24 @@ TS_ASSERT_EQUALS(m_listener->runStatus(), ILiveListener::NoRun);
 listener to transition to a disconnected state.
 
 **Script:**
+
 ```cpp
 m_server->script({ PktDisconnect{} });
 m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return !m_listener->isConnected(); }, 5s)`.
+1. `waitFor([&]{ return !m_listener->isConnected(); }, 5s)`.
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT(!m_listener->isConnected());
 ```
 
----
+______________________________________________________________________
 
 #### `test_LegacyExtractEmptyWorkspace`
 
@@ -219,6 +227,7 @@ TS_ASSERT(!m_listener->isConnected());
 type (even if empty).
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -230,19 +239,21 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 2; }, 5s)`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 2; }, 5s)`.
    (Wait until server has sent Geometry + BeamlineInfo before extract.)
-3. `auto ws = extractWithTimeout(*m_listener, 10s)`.
-4. `m_server->releaseExtractGate()`.
+1. `auto ws = extractWithTimeout(*m_listener, 10s)`.
+1. `m_server->releaseExtractGate()`.
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws, nullptr);
 TS_ASSERT_EQUALS(m_listener->runStatus(), ILiveListener::NoRun);
 ```
 
----
+______________________________________________________________________
 
 #### `test_LegacyConnectionStatusTransitions`
 
@@ -250,6 +261,7 @@ TS_ASSERT_EQUALS(m_listener->runStatus(), ILiveListener::NoRun);
 after a successful handshake sequence.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -261,10 +273,12 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 2; }, 5s)`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 2; }, 5s)`.
 
 **Assertions:**
+
 ```cpp
 // After receiving Geometry and BeamlineInfo, listener is Connected.
 TS_ASSERT_EQUALS(m_listener->listenerState(),
@@ -272,17 +286,18 @@ TS_ASSERT_EQUALS(m_listener->listenerState(),
 m_server->releaseExtractGate();
 ```
 
----
+______________________________________________________________________
 
 ### 6.2 Connection & mid-run join — 2 tests
 
----
+______________________________________________________________________
 
 #### `test_connect_succeeds_over_uds`
 
 **Purpose:** The listener can connect and exchange packets over a Unix-domain socket.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -293,16 +308,18 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 2; }, 5s)`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 2; }, 5s)`.
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT(m_server->clientConnected());
 TS_ASSERT_GREATER_THAN(m_server->bytesSent(), 0u);
 ```
 
----
+______________________________________________________________________
 
 #### `test_midRunJoin_doesNotWipeWorkspaceInit`
 
@@ -312,6 +329,7 @@ DeviceDescriptor packets), the first `extractData()` must return a properly
 initialised workspace and `runState()` must be `Running`.
 
 **Script:**
+
 ```cpp
 // NEW_RUN arrives BEFORE geometry/beamline metadata — this is the mid-run join scenario.
 m_server->script({
@@ -326,13 +344,15 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 4; }, 5s)`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 4; }, 5s)`.
    (Wait for geometry, beamline info, and event packet to be delivered.)
-3. `auto ws = extractWithTimeout(*m_listener, 10s)`.
-4. `m_server->releaseExtractGate()`.
+1. `auto ws = extractWithTimeout(*m_listener, 10s)`.
+1. `m_server->releaseExtractGate()`.
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws, nullptr);
 // The listener must report Running after a NEW_RUN + events.
@@ -343,11 +363,11 @@ TS_ASSERT_DIFFERS(ews, nullptr);
 TS_ASSERT_DIFFERS(ews->getInstrument()->getName(), "");
 ```
 
----
+______________________________________________________________________
 
 ### 6.3 Single & full run lifecycle — 3 tests
 
----
+______________________________________________________________________
 
 #### `test_singleRun_extractsEventsAndRunNumber`
 
@@ -355,6 +375,7 @@ TS_ASSERT_DIFFERS(ews->getInstrument()->getName(), "");
 events in the workspace with the correct run number.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -370,13 +391,15 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 4; }, 5s)`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 4; }, 5s)`.
    (Geometry, BeamlineInfo, NEW_RUN, BankedEvent all sent.)
-3. `auto ws = extractWithTimeout(*m_listener, 10s)`.
-4. `m_server->releaseExtractGate()`.
+1. `auto ws = extractWithTimeout(*m_listener, 10s)`.
+1. `m_server->releaseExtractGate()`.
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws, nullptr);
 auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
@@ -385,7 +408,7 @@ TS_ASSERT_EQUALS(ews->run().getPropertyValueAsType<int>("run_number"), 42);
 TS_ASSERT_LESS_THAN(0, static_cast<int>(ews->getNumberEvents()));
 ```
 
----
+______________________________________________________________________
 
 #### `test_fullRun_beginExtractEndExtract`
 
@@ -393,6 +416,7 @@ TS_ASSERT_LESS_THAN(0, static_cast<int>(ews->getNumberEvents()));
 extract at `RunEnded`.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -408,24 +432,26 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 4; }, 5s)`.
-3. First extract: `auto ws1 = extractWithTimeout(*m_listener, 10s)`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 4; }, 5s)`.
+1. First extract: `auto ws1 = extractWithTimeout(*m_listener, 10s)`.
    Status check: `TS_ASSERT_EQUALS(m_listener->runStatus(), ILiveListener::Running)`.
-4. `m_server->releaseExtractGate()`.  (Release gate 1.)
-5. `waitFor([&]{ return m_server->scriptIndex() >= 6; }, 5s)`.
+1. `m_server->releaseExtractGate()`. (Release gate 1.)
+1. `waitFor([&]{ return m_server->scriptIndex() >= 6; }, 5s)`.
    (Wait for END_RUN to be sent.)
-6. Second extract: `auto ws2 = extractWithTimeout(*m_listener, 10s)`.
-7. `m_server->releaseExtractGate()`.  (Release gate 2.)
+1. Second extract: `auto ws2 = extractWithTimeout(*m_listener, 10s)`.
+1. `m_server->releaseExtractGate()`. (Release gate 2.)
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws1, nullptr);
 TS_ASSERT_DIFFERS(ws2, nullptr);
 TS_ASSERT_EQUALS(m_listener->runStatus(), ILiveListener::RunEnded);
 ```
 
----
+______________________________________________________________________
 
 #### `test_runNumber_proposalId_title_propagate`
 
@@ -433,6 +459,7 @@ TS_ASSERT_EQUALS(m_listener->runStatus(), ILiveListener::RunEnded);
 Proposal ID and run title must appear in workspace run properties.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -447,12 +474,14 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, 5s)`.
-3. `auto ws = extractWithTimeout(*m_listener, 10s)`.
-4. `m_server->releaseExtractGate()`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, 5s)`.
+1. `auto ws = extractWithTimeout(*m_listener, 10s)`.
+1. `m_server->releaseExtractGate()`.
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws, nullptr);
 const auto &run = ws->run();
@@ -462,21 +491,22 @@ TS_ASSERT_EQUALS(run.getPropertyValueAsType<std::string>("run_title"),
                  "My Test Title");
 ```
 
----
+______________________________________________________________________
 
 ### 6.4 C1 fix — `lastTransition` survives NotYet — 1 test
 
----
+______________________________________________________________________
 
 #### `test_lastTransition_preservedAcrossNotYet`
 
 **Purpose:** Covers `SNSLiveEventDataListener.cpp:1515-1516` (C1 fix).
 `extractData()` on the NotYet path (workspace not yet initialised — Geometry not
-yet received) must not clobber `m_lastTransition`.  After a subsequent extract
+yet received) must not clobber `m_lastTransition`. After a subsequent extract
 that *does* succeed, `lastTransition()` must reflect the `BeginRun` transition,
 not a stale / default value.
 
 **Script:**
+
 ```cpp
 m_server->script({
     // Deliberately omit Geometry here so first extract() takes NotYet path.
@@ -493,18 +523,20 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 2; }, 5s)`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 2; }, 5s)`.
    (NEW_RUN and banked event sent before first extract.)
-3. First extract: `auto ws1 = extractWithTimeout(*m_listener, 10s)`.
+1. First extract: `auto ws1 = extractWithTimeout(*m_listener, 10s)`.
    This may return nullptr (NotYet path) — that is expected.
-4. `m_server->releaseExtractGate()`.  (Release gate 1.)
-5. `waitFor([&]{ return m_server->scriptIndex() >= 6; }, 5s)`.
+1. `m_server->releaseExtractGate()`. (Release gate 1.)
+1. `waitFor([&]{ return m_server->scriptIndex() >= 6; }, 5s)`.
    (Geometry + BeamlineInfo + events sent.)
-6. Second extract: `auto ws2 = extractWithTimeout(*m_listener, 10s)`.
-7. `m_server->releaseExtractGate()`.  (Release gate 2.)
+1. Second extract: `auto ws2 = extractWithTimeout(*m_listener, 10s)`.
+1. `m_server->releaseExtractGate()`. (Release gate 2.)
 
 **Assertions:**
+
 ```cpp
 // Second extract succeeds with a workspace.
 TS_ASSERT_DIFFERS(ws2, nullptr);
@@ -513,108 +545,127 @@ TS_ASSERT_EQUALS(m_listener->lastTransition(),
                  ILiveListener::RunTransition::BeginRun);
 ```
 
----
+______________________________________________________________________
 
-### 6.5 Back-pressure single-slot invariant — 2 tests
+### 6.5 Back-pressure observables — 2 tests
 
-Covers `SNSLiveEventDataListener.cpp:646-652, 738-743`.
+The production single-slot throws at
+`SNSLiveEventDataListener.cpp:651-655, 744-748` are unreachable over a
+real socket: the same `rxPacket(RunStatusPkt)` call that occupies
+`m_pendingTransition` also sets `m_pauseNetRead=true`, causing
+`bufferParse()` to stop parsing before the next RunStatus packet arrives.
+The production throws are exercised in `SNSLiveEventDataListenerNoNetworkTest`
+by `test_rxRunStatusPkt_newRun_throws_when_slot_occupied` and
+`test_rxRunStatusPkt_endRun_throws_when_slot_occupied`.
+These two integration tests verify the *observable consequences* instead.
 
----
+______________________________________________________________________
 
-#### `test_doubleBeginRun_violatesSingleSlot_throws`
+#### `test_doubleBeginRun_surfacesError_viaBackPressureCascade`
 
-**Purpose:** Sending NEW_RUN(1) followed by NEW_RUN(2) **without** an
-intervening `extractData()` violates the single-slot pending-transition
-invariant and must surface as an error.
+**Purpose:** Two consecutive NEW_RUNs without an intervening
+`extractData()` surface as an error via the back-pressure cascade.
+NEW_RUN(1) takes the white-lie path and initialises the workspace;
+NEW_RUN(2) takes the normal path and queues `BeginRun`. `extractData()`
+dispatches `onBeginRun()` which clears geometry state; `doExtractData()`
+then polls 10 s and throws `NotYet`. Either a thrown exception or
+`ListenerState::Error` is accepted.
 
 **Script:**
+
 ```cpp
 m_server->script({
-    PKT(geometryPacketV0),
-    PKT(beamlineInfoPacketV1),
-    BLD_RUN(ADARA::RunStatus::NEW_RUN, 1, 0x0000000100000000ULL),
-    PKT(bankedEventPacketV1),
-    // No extractData() gate here — second NEW_RUN arrives immediately.
-    BLD_RUN(ADARA::RunStatus::NEW_RUN, 2, 0x0000000200000000ULL),
-    PktDisconnect{},
+    Testing::buildGeometryPkt(kMinimalIDF()),
+    Testing::buildBeamlineInfoPkt(kInstrumentName),
+    Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 1,
+                                0x0000000100000000ULL), // white-lie → inits ws
+    Testing::buildBankedEventPkt(0x0000000100000000ULL, 1000.0, {{100u, 1u}}),
+    // No extractData() gate — second NEW_RUN arrives without prior extract.
+    Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 2,
+                                0x0000000200000000ULL), // normal → BeginRun queued
+    Testing::PktDisconnect{},
 });
 m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, 5s)`.
-   (All packets including second NEW_RUN sent.)
-3. `auto ws = extractWithTimeout(*m_listener, 10s)`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, 5s)`.
+1. 100 ms sleep; extract with 15 s timeout + try/catch.
 
 **Assertions:**
+
 ```cpp
-// The second NEW_RUN without an intervening extract must trigger an error.
-// Either extractData() throws, or runStatus() reports an error state.
-// Accept either form — the exact surface depends on which path fires first.
-bool gotError = (ws == nullptr);
-if (!gotError) {
-    gotError = (m_listener->listenerState() ==
-                API::ILiveListener::ListenerState::Error);
-}
-TSM_ASSERT("Expected error from double-NEW_RUN without intervening extract",
-            gotError);
+bool gotError = false;
+try {
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{15});
+    gotError = (ws == nullptr) || (m_listener->listenerState() ==
+                                   API::ListenerState::Error);
+} catch (const std::exception &) { gotError = true; }
+TSM_ASSERT("double-NEW_RUN without intervening extract must surface an error "
+           "(onBeginRun clears geometry state; NotYet after 10 s poll)",
+           gotError);
 ```
 
----
+______________________________________________________________________
 
-#### `test_endRunWhilePending_violatesSingleSlot_throws`
+#### `test_newRunEndRun_backPressureProducesReadWaitThenCleanEndRun`
 
-**Purpose:** Sending NEW_RUN followed immediately by END_RUN without an
-intervening `extractData()` violates the single-slot invariant.
+**Purpose:** White-lie NEW_RUN + END_RUN sequence: END_RUN sets
+`m_pauseNetRead=true` (no pending BeginRun to block it), producing
+`listenerState()==ReadWait`; subsequent `extractData()` succeeds and
+reports `runStatus()==EndRun`.
 
 **Script:**
+
 ```cpp
 m_server->script({
-    PKT(geometryPacketV0),
-    PKT(beamlineInfoPacketV1),
-    BLD_RUN(ADARA::RunStatus::NEW_RUN, 3, 0x0000000100000000ULL),
-    // No extractData() gate — END_RUN arrives immediately.
-    BLD_RUN(ADARA::RunStatus::END_RUN, 3, 0x0000000200000000ULL),
-    PktDisconnect{},
+    Testing::buildGeometryPkt(kMinimalIDF()),
+    Testing::buildBeamlineInfoPkt(kInstrumentName),
+    Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 3,
+                                0x0000000100000000ULL),
+    Testing::buildRunStatusPkt(ADARA::RunStatus::END_RUN, 3,
+                                0x0000000200000000ULL),
+    Testing::PktDisconnect{},
 });
 m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 4; }, 5s)`.
-3. `auto ws = extractWithTimeout(*m_listener, 10s)`.
+1. `waitFor([&]{ return m_listener->listenerState() == API::ListenerState::ReadWait; }, 5s)`.
+1. `auto ws = extractWithTimeout(*m_listener, 10s)`.
 
 **Assertions:**
+
 ```cpp
-bool gotError = (ws == nullptr);
-if (!gotError) {
-    gotError = (m_listener->listenerState() ==
-                API::ILiveListener::ListenerState::Error);
-}
-TSM_ASSERT("Expected error from END_RUN without prior extract", gotError);
+TS_ASSERT_EQUALS(m_listener->listenerState(), API::ListenerState::ReadWait);
+TS_ASSERT_DIFFERS(ws, nullptr);
+TS_ASSERT_EQUALS(m_listener->runStatus(), API::ILiveListener::EndRun);
 ```
 
----
+______________________________________________________________________
 
 ### 6.6 Deferred-run-details invariant — delegated
 
 Sub-spec 07 (`m_deferredRunDetailsPkt` non-null at `onBeginRun()`,
 `SNSLiveEventDataListener.cpp:1562-1568`) is **already covered** by
-`SNSLiveEventDataListenerNoNetworkTest.h`.  We do **not** duplicate that
-coverage here.  The test file's header comment must contain a one-line
+`SNSLiveEventDataListenerNoNetworkTest.h`. We do **not** duplicate that
+coverage here. The test file's header comment must contain a one-line
 cross-reference:
+
 > *"For the deferred-run-details invariant see
 > `SNSLiveEventDataListenerNoNetworkTest.h::test_*`."*
 
----
+______________________________________________________________________
 
 ### 6.7 Pause / resume — 3 tests
 
 Covers `SNSLiveEventDataListener.cpp:1590-1596` and `:96-99, 400-402`.
 
----
+______________________________________________________________________
 
 #### `test_pauseResume_orthogonalToRunState`
 
@@ -622,6 +673,7 @@ Covers `SNSLiveEventDataListener.cpp:1590-1596` and `:96-99, 400-402`.
 sequence; `isPaused()` (if exposed) or the `pause` log property flips correctly.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -639,12 +691,14 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 8; }, 5s)`.
-3. `auto ws = extractWithTimeout(*m_listener, 10s)`.
-4. `m_server->releaseExtractGate()`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 8; }, 5s)`.
+1. `auto ws = extractWithTimeout(*m_listener, 10s)`.
+1. `m_server->releaseExtractGate()`.
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws, nullptr);
 // Run state must still be Running after pause/resume.
@@ -654,7 +708,7 @@ const auto &run = ws->run();
 TS_ASSERT(run.hasProperty("pause"));
 ```
 
----
+______________________________________________________________________
 
 #### `test_pausedEvents_droppedByDefault`
 
@@ -662,6 +716,7 @@ TS_ASSERT(run.hasProperty("pause"));
 RESUME are absent from the extracted workspace.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -680,14 +735,16 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. Ensure `SNSLiveEventDataListener.keepPausedEvents` is unset (default is
    `false`).
-2. `TS_ASSERT(connectListener())`.
-3. `waitFor([&]{ return m_server->scriptIndex() >= 7; }, 5s)`.
-4. `auto ws = extractWithTimeout(*m_listener, 10s)`.
-5. `m_server->releaseExtractGate()`.
+1. `TS_ASSERT(connectListener())`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 7; }, 5s)`.
+1. `auto ws = extractWithTimeout(*m_listener, 10s)`.
+1. `m_server->releaseExtractGate()`.
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws, nullptr);
 auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
@@ -696,7 +753,7 @@ TS_ASSERT_DIFFERS(ews, nullptr);
 TS_ASSERT_EQUALS(static_cast<int>(ews->getNumberEvents()), 1);
 ```
 
----
+______________________________________________________________________
 
 #### `test_pausedEvents_keptWhenConfigured`
 
@@ -706,15 +763,17 @@ retained in the extracted workspace.
 **Script:** same as `test_pausedEvents_droppedByDefault`.
 
 **Steps:**
+
 1. **Before** `connectListener()`: set config:
    ```cpp
    Kernel::ConfigService::Instance().setString(
        "SNSLiveEventDataListener.keepPausedEvents", "1");
    ```
-2. `TS_ASSERT(connectListener())`.
-3–5. Same as `test_pausedEvents_droppedByDefault`.
+1. `TS_ASSERT(connectListener())`.
+   3–5. Same as `test_pausedEvents_droppedByDefault`.
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws, nullptr);
 auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
@@ -723,7 +782,7 @@ TS_ASSERT_DIFFERS(ews, nullptr);
 TS_ASSERT_EQUALS(static_cast<int>(ews->getNumberEvents()), 3);
 ```
 
----
+______________________________________________________________________
 
 ### 6.8 Historical replay & variable cache — 2 tests (XFAIL)
 
@@ -733,7 +792,7 @@ TS_ASSERT_EQUALS(static_cast<int>(ews->getNumberEvents()), 3);
 > [`plans/ignore-packets-defect.md`](../ignore-packets-defect.md).
 > In summary: `SNSLiveEventDataListener::start()` sets
 > `m_filterUntilRunStart = true` when `startTime == 1 ns past epoch`, but
-> **never** sets `m_ignorePackets = true`.  Because `ignorePacket()` at
+> **never** sets `m_ignorePackets = true`. Because `ignorePacket()` at
 > `SNSLiveEventDataListener.cpp:1601-1629` short-circuits with
 > `if (!m_ignorePackets) return false;`, the entire filter-until-run-start
 > and variable-cache replay logic is unreachable.
@@ -741,15 +800,15 @@ TS_ASSERT_EQUALS(static_cast<int>(ews->getNumberEvents()), 3);
 > **XFAIL convention used:** Option (1) — invert the assertion so the test
 > *currently passes* by observing the broken behaviour, with a prominent
 > `TSM_ASSERT` message naming the defect and pointing to the production line
-> range.  When the production fix lands, remove the inversion.
+> range. When the production fix lands, remove the inversion.
 >
 > These tests must be **compiled, registered in `TEST_FILES`, and run** by
-> `ctest`.  They are **not** to be `#if 0`-ed out, commented out, or gated
-> behind a runtime skip.  Their purpose is to be executable, in-tree
+> `ctest`. They are **not** to be `#if 0`-ed out, commented out, or gated
+> behind a runtime skip. Their purpose is to be executable, in-tree
 > evidence of the latent defect that will start failing as soon as the fix
 > is committed.
 
----
+______________________________________________________________________
 
 #### `test_filterUntilRunStart_dropsPreRunPackets`
 
@@ -760,6 +819,7 @@ packets are filtered and absent from the first extract.
 `true`, the filter is a no-op and pre-run packets are NOT filtered.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -775,14 +835,16 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener(Types::Core::DateAndTime(1)))`.
    (`DateAndTime(1)` = 1 nanosecond past epoch = the "replay from previous
    run start" sentinel; `start()` sets `m_filterUntilRunStart = true`.)
-2. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, 5s)`.
-3. `auto ws = extractWithTimeout(*m_listener, 10s)`.
-4. `m_server->releaseExtractGate()`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, 5s)`.
+1. `auto ws = extractWithTimeout(*m_listener, 10s)`.
+1. `m_server->releaseExtractGate()`.
 
 **Assertions (XFAIL — inverted):**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws, nullptr);
 auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
@@ -802,13 +864,13 @@ TSM_ASSERT_EQUALS(
     static_cast<int>(ews->getNumberEvents()), 3 /* broken */ /* expected-when-fixed: 1 */);
 ```
 
----
+______________________________________________________________________
 
 #### `test_variableCache_replayedAfterStartCondition`
 
 **Purpose (intended):** Variable packets received while `m_ignorePackets` is
 `true` are cached in `m_variableMap` and replayed by `replayVariableCache()`
-when the filter releases at NEW_RUN.  The log property reflects all values
+when the filter releases at NEW_RUN. The log property reflects all values
 in arrival order after the first extract.
 
 **Current status: XFAIL.** Same root cause: `m_ignorePackets` is always
@@ -816,6 +878,7 @@ in arrival order after the first extract.
 `replayVariableCache()` is never called.
 
 **Script:**
+
 ```cpp
 // pulseId before NEW_RUN — these should be "ignored" (cached), but aren't.
 const uint64_t preRunPulse  = 0x0000000100000000ULL;
@@ -836,13 +899,15 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener(Types::Core::DateAndTime(1)))`.
    (1 ns sentinel → `m_filterUntilRunStart = true`.)
-2. `waitFor([&]{ return m_server->scriptIndex() >= 8; }, 5s)`.
-3. `auto ws = extractWithTimeout(*m_listener, 10s)`.
-4. `m_server->releaseExtractGate()`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 8; }, 5s)`.
+1. `auto ws = extractWithTimeout(*m_listener, 10s)`.
+1. `m_server->releaseExtractGate()`.
 
 **Assertions (XFAIL — inverted):**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws, nullptr);
 const auto &run = ws->run();
@@ -885,19 +950,20 @@ TSM_ASSERT(
     run.hasProperty("status"));  // a trivially true assertion to make the test "pass"
 ```
 
----
+______________________________________________________________________
 
 ### 6.9 Error propagation — 3 tests
 
----
+______________________________________________________________________
 
 #### `test_invalidPacket_propagatesAsBackgroundException`
 
 **Purpose:** Garbage bytes cause `ADARA::invalid_packet` → the exception is
 stored in `m_backgroundException` and re-thrown on the next `runState()` or
-`extractData()` call.  Covers `SNSLiveEventDataListener.cpp:316`.
+`extractData()` call. Covers `SNSLiveEventDataListener.cpp:316`.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -910,12 +976,14 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 3; }, 5s)`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 3; }, 5s)`.
    (Wait for garbage to be sent.)
-3. Call `m_listener->runStatus()` or `extractData()` — one of these must throw.
+1. Call `m_listener->runStatus()` or `extractData()` — one of these must throw.
 
 **Assertions:**
+
 ```cpp
 bool threw = false;
 try {
@@ -927,7 +995,7 @@ try {
 TS_ASSERT(threw);
 ```
 
----
+______________________________________________________________________
 
 #### `test_serverDisconnect_setsErrorState`
 
@@ -935,6 +1003,7 @@ TS_ASSERT(threw);
 and transitions to `Error` state.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -946,10 +1015,12 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return !m_listener->isConnected(); }, 5s)`.
+1. `waitFor([&]{ return !m_listener->isConnected(); }, 5s)`.
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT(!m_listener->isConnected());
 // After EOF, listener should not report Connected.
@@ -957,7 +1028,7 @@ TS_ASSERT_DIFFERS(m_listener->listenerState(),
                   API::ILiveListener::ListenerState::Connected);
 ```
 
----
+______________________________________________________________________
 
 #### `test_connectFailure_returnsFalse`
 
@@ -967,24 +1038,26 @@ return `false` without throwing.
 **Script:** none — `m_server->start()` is NOT called.
 
 **Steps:**
+
 1. Construct `m_listener = std::make_unique<SNSLiveEventDataListener>()`.
    (Do not call `connectListener()` — call `connect()` manually.)
-2. `Poco::Net::SocketAddress addr(Poco::Net::AddressFamily::UNIX_LOCAL, m_sockPath)`.
-3. `bool result = m_listener->connect(addr)`.
+1. `Poco::Net::SocketAddress addr(Poco::Net::AddressFamily::UNIX_LOCAL, m_sockPath)`.
+1. `bool result = m_listener->connect(addr)`.
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT(!result);
 TS_ASSERT(!m_listener->isConnected());
 ```
 
----
+______________________________________________________________________
 
 ### 6.10 Monitor workspace routing — 2 tests
 
 Covers `SNSLiveEventDataListener.cpp:465-525, 1345-1362`.
 
----
+______________________________________________________________________
 
 #### `test_beamMonitorEvents_routedToMonitorWorkspace`
 
@@ -992,6 +1065,7 @@ Covers `SNSLiveEventDataListener.cpp:465-525, 1345-1362`.
 not in the main event workspace.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -1006,12 +1080,14 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, 5s)`.
-3. `auto ws = extractWithTimeout(*m_listener, 10s)`.
-4. `m_server->releaseExtractGate()`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, 5s)`.
+1. `auto ws = extractWithTimeout(*m_listener, 10s)`.
+1. `m_server->releaseExtractGate()`.
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws, nullptr);
 auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
@@ -1026,7 +1102,7 @@ TS_ASSERT_DIFFERS(monEws, nullptr);
 TS_ASSERT_LESS_THAN(0, static_cast<int>(monEws->getNumberEvents()));
 ```
 
----
+______________________________________________________________________
 
 #### `test_invalidMonitorId_logsOnceAndContinues`
 
@@ -1035,6 +1111,7 @@ once (the `m_badMonitors` dedup at `SNSLiveEventDataListener.cpp:515-519`)
 and the listener continues processing subsequent packets without crashing.
 
 **Script:**
+
 ```cpp
 // beamMonitorPacketV0 uses monitor ID from its fixture; we need a custom
 // packet with a monitor ID not in the instrument.
@@ -1056,12 +1133,14 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener())`.
-2. `waitFor([&]{ return m_server->scriptIndex() >= 6; }, 5s)`.
-3. `auto ws = extractWithTimeout(*m_listener, 10s)`.
-4. `m_server->releaseExtractGate()`.
+1. `waitFor([&]{ return m_server->scriptIndex() >= 6; }, 5s)`.
+1. `auto ws = extractWithTimeout(*m_listener, 10s)`.
+1. `m_server->releaseExtractGate()`.
 
 **Assertions:**
+
 ```cpp
 // The listener must continue operating (no crash, no error state).
 TS_ASSERT_DIFFERS(ws, nullptr);
@@ -1073,7 +1152,7 @@ TS_ASSERT_DIFFERS(ews, nullptr);
 TS_ASSERT_LESS_THAN(0, static_cast<int>(ews->getNumberEvents()));
 ```
 
----
+______________________________________________________________________
 
 ## 7. Known production defects surfaced by these tests
 
@@ -1084,18 +1163,19 @@ TS_ASSERT_LESS_THAN(0, static_cast<int>(ews->getNumberEvents()));
 
 **Description:** `start()` sets `m_filterUntilRunStart = true` when
 `startTime == 1 ns past epoch` (the historical-replay sentinel), but never
-sets `m_ignorePackets = true`.  Since `ignorePacket()` short-circuits at
+sets `m_ignorePackets = true`. Since `ignorePacket()` short-circuits at
 `if (!m_ignorePackets) return false;`, the entire filter-until-run-start
 and variable-cache replay path is dead code.
 
 **Tests that expose this defect:**
+
 - `test_filterUntilRunStart_dropsPreRunPackets` (§6.8)
 - `test_variableCache_replayedAfterStartCondition` (§6.8)
 
 **XFAIL inversion convention:** Both tests assert the *broken* observable
 behaviour (packets not filtered, replay never called) via an inverted
 `TSM_ASSERT` whose message explicitly names the defect and cites the line
-range above.  The test currently *passes* because it asserts broken behaviour.
+range above. The test currently *passes* because it asserts broken behaviour.
 **When the fix lands:** the inversion is removed in the same commit as the
 production fix; the tests will then assert the correct (fixed) behaviour
 and continue to pass.

@@ -705,23 +705,27 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
     // Add the run_number property
     if (m_pendingTransition == BeginRun) {
       if (haveRunNumber) {
-        // run_number should not exist at this point, and if it does, we can't
-        // do much about it.
-        g_log.warning("run_number property already exists.  Current value will be "
-                      "ignored.\n"
-                      "(This should never happen.  Talk to the Mantid developers.)");
-      } else {
-        // Save a copy of the packet so we can call setRunDetails() later
-        // (after extractData() has been called to fetch any data remaining
-        // from before this run start.
-        // Note: need to actually copy the contents (not just a pointer)
-        // because pkt will go away when this function returns.  And since
-        // packets don't have default constructors, we can only keep a pointer
-        // as a member, and thus have to actually allocate our deferred packet
-        // with new.  Fortunately, this doesn't happen to often, so performance
-        // isn't an issue.
-        m_deferredRunDetailsPkt = std::shared_ptr<ADARA::RunStatusPkt>(new ADARA::RunStatusPkt(pkt));
+        // Two consecutive NEW_RUN packets arrived without an intervening
+        // END_RUN.  The prior NEW_RUN went through the white-lie path (:658-703)
+        // and already called setRunDetails(), adding run_number to m_eventBuffer.
+        // We cannot stash a deferred RunStatusPkt: onBeginRun() would call
+        // setRunDetails() a second time and attempt to add a duplicate property.
+        // Surface as a runtime_error.  The bg-thread catch at :318-326 stores it
+        // in m_backgroundException; doExtractData() re-throws at :1444-1450.
+        throw std::runtime_error("SNSLiveEventDataListener: received NEW_RUN while run_number is already "
+                                 "set — two consecutive NEW_RUN packets without an intervening END_RUN.  "
+                                 "The data stream is malformed.");
       }
+      // Save a copy of the packet so we can call setRunDetails() later
+      // (after extractData() has been called to fetch any data remaining
+      // from before this run start.
+      // Note: need to actually copy the contents (not just a pointer)
+      // because pkt will go away when this function returns.  And since
+      // packets don't have default constructors, we can only keep a pointer
+      // as a member, and thus have to actually allocate our deferred packet
+      // with new.  Fortunately, this doesn't happen to often, so performance
+      // isn't an issue.
+      m_deferredRunDetailsPkt = std::shared_ptr<ADARA::RunStatusPkt>(new ADARA::RunStatusPkt(pkt));
     }
 
     // See detailed comments below for what the m_pauseNetRead flag does and the
@@ -1335,7 +1339,7 @@ void SNSLiveEventDataListener::initWorkspacePart2() {
   // repopulated when we receive the next geometry packet.
 
   auto tmp =
-      createWorkspace<DataObjects::EventWorkspace>(m_eventBuffer->getInstrument()->getDetectorIDs(true).size(), 2, 1);
+      createWorkspace<DataObjects::EventWorkspace>(m_eventBuffer->getInstrument()->getDetectorIDs(false).size(), 2, 1);
   WorkspaceFactory::Instance().initializeFromParent(*m_eventBuffer, *tmp, true);
   if (m_eventBuffer->getNumberHistograms() != tmp->getNumberHistograms()) {
     // need to generate the spectra to detector map
