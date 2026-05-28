@@ -6,50 +6,50 @@ Adds the remaining **7** test methods to the fixture: the two XFAIL
 historical-replay tests that document a known latent production defect,
 three error-propagation tests, and two monitor-workspace tests.
 
-| Section | Area | Tests in this commit |
-|---|---|---|
-| 6.8 | Historical replay & variable cache (XFAIL) | 2 |
-| 6.9 | Error propagation | 3 |
-| 6.10 | Monitor workspace routing | 2 |
+| Section | Area                                       | Tests in this commit |
+| ------- | ------------------------------------------ | -------------------- |
+| 6.8     | Historical replay & variable cache (XFAIL) | 2                    |
+| 6.9     | Error propagation                          | 3                    |
+| 6.10    | Monitor workspace routing                  | 2                    |
 
 This commit closes out the spec. After this, the full 22-test catalogue
 is present (1 from `subspec03` + 8 from `subspec04` + 6 from
 `subspec05` + 7 from `subspec06`).
 
----
+______________________________________________________________________
 
 ## 0. Agent execution instructions (must obey)
 
 1. Base on branch `EWM15431_live-listener-interface__agents`.
-2. **Scope fence.** Edit exactly **one** file:
+1. **Scope fence.** Edit exactly **one** file:
    `Framework/LiveData/test/SNSLiveEventDataListenerTest.h`. Do not
    modify CMake, `MockSMSServer.h/.cpp`, the legacy header, or any
    file under `Framework/LiveData/src/` / `Framework/LiveData/inc/`.
-3. **Static verification only — DO NOT build, DO NOT run tests.**
+1. **Static verification only — DO NOT build, DO NOT run tests.**
    Verify the cited line ranges in
    `Framework/LiveData/src/SNSLiveEventDataListener.cpp` against the
    purpose statements. For the XFAIL tests, **read**
    [`plans/ignore-packets-defect.md`](../../ignore-packets-defect.md)
    to confirm the defect description before writing the inverted
    assertions.
-4. **No build artefacts in the PR.**
-5. **No `TestableSNSListener`.** Drive the real listener via
+1. **No build artefacts in the PR.**
+1. **No `TestableSNSListener`.** Drive the real listener via
    `connectListener()`.
-6. **Ambiguity protocol.** If, after reading
+1. **Ambiguity protocol.** If, after reading
    `plans/ignore-packets-defect.md`, the description of the
    `m_ignorePackets` defect appears to no longer match the production
    code on this branch (i.e. someone has fixed it), **stop** and surface
    it in the PR description — the inverted assertions in §4 of this
    sub-spec would then mis-pass.
-7. **No production code changes.**
-8. **XFAIL tests must be compiled, registered, and run by `ctest`.**
+1. **No production code changes.**
+1. **XFAIL tests must be compiled, registered, and run by `ctest`.**
    They are **not** to be `#if 0`-ed out, commented out, or gated
    behind a runtime skip. Their purpose is to be executable, in-tree
    evidence of the latent defect that will start failing as soon as
    the production fix is committed.
-9. **One commit, all 7 tests.**
+1. **One commit, all 7 tests.**
 
----
+______________________________________________________________________
 
 ## 1. Goal of this commit
 
@@ -58,7 +58,7 @@ Complete the integration-test catalogue by adding:
 - two XFAIL tests covering the historical-replay / variable-cache path
   (§6.8). These currently *pass* by asserting the *broken* behaviour
   caused by the `m_ignorePackets` defect at
-  `SNSLiveEventDataListener.cpp:1601-1629` (analysis in
+  `SNSLiveEventDataListener.cpp:1640-1668` (analysis in
   [`plans/ignore-packets-defect.md`](../../ignore-packets-defect.md)).
   Each is annotated with a prominent `TSM_ASSERT` message pointing at
   the defect, and the assertion is inverted relative to the intended
@@ -71,22 +71,22 @@ Complete the integration-test catalogue by adding:
   events to the monitor sub-workspace and the once-only logging of
   unrecognised monitor IDs.
 
----
+______________________________________________________________________
 
 ## 2. Files touched in this commit
 
-| Action | Path |
-|---|---|
-| Edit | `Framework/LiveData/test/SNSLiveEventDataListenerTest.h` (append 7 `test_*` methods inside the existing class) |
+| Action | Path                                                                                                           |
+| ------ | -------------------------------------------------------------------------------------------------------------- |
+| Edit   | `Framework/LiveData/test/SNSLiveEventDataListenerTest.h` (append 7 `test_*` methods inside the existing class) |
 
----
+______________________________________________________________________
 
 ## 3. Conventions (same as `subspec04` / `subspec05`)
 
 The shorthand `PKT(name)`, `BLD_RUN`, `BLD_VAR_U32`, `BLD_BANKED` is
 exactly as defined in `subspec04` §3.
 
----
+______________________________________________________________________
 
 ## 4. §6.8 — Historical replay & variable cache (2 tests, XFAIL)
 
@@ -97,7 +97,7 @@ exactly as defined in `subspec04` §3.
 > In summary: `SNSLiveEventDataListener::start()` sets
 > `m_filterUntilRunStart = true` when `startTime == 1 ns past epoch`,
 > but **never** sets `m_ignorePackets = true`. Because `ignorePacket()`
-> at `SNSLiveEventDataListener.cpp:1601-1629` short-circuits with
+> at `SNSLiveEventDataListener.cpp:1640-1668` short-circuits with
 > `if (!m_ignorePackets) return false;`, the entire
 > filter-until-run-start and variable-cache replay logic is unreachable.
 >
@@ -120,6 +120,7 @@ pre-NEW_RUN packets are filtered and absent from the first extract.
 `true`, the filter is a no-op and pre-run packets are NOT filtered.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -138,15 +139,17 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener(Types::Core::DateAndTime(1)));`
    *(`DateAndTime(1)` = 1 nanosecond past epoch = the "replay from
    previous run start" sentinel; `start()` sets
    `m_filterUntilRunStart = true`.)*
-2. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, std::chrono::seconds{5});`
-3. `auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});`
-4. `m_server->releaseExtractGate();`
+1. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, std::chrono::seconds{5});`
+1. `auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});`
+1. `m_server->releaseExtractGate();`
 
 **Assertions (XFAIL — inverted):**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws, nullptr);
 auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
@@ -159,7 +162,7 @@ TS_ASSERT_DIFFERS(ews, nullptr);
 // must be removed.
 TSM_ASSERT_EQUALS(
     "XFAIL: pending fix for m_ignorePackets initialisation — see "
-    "SNSLiveEventDataListener.cpp:1601-1629 and "
+    "SNSLiveEventDataListener.cpp:1640-1668 and "
     "plans/ignore-packets-defect.md. "
     "This assertion is INVERTED: it currently passes by observing "
     "broken behaviour (3 events instead of 1). Remove inversion when "
@@ -180,6 +183,7 @@ always `false`, so variable packets are processed immediately (not
 cached) and `replayVariableCache()` is never called.
 
 **Script:**
+
 ```cpp
 const uint64_t preRunPulse  = 0x0000000100000000ULL;
 const uint64_t postRunPulse = 0x0000000200000000ULL;
@@ -199,13 +203,15 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener(Types::Core::DateAndTime(1)));`
    *(1 ns sentinel → `m_filterUntilRunStart = true`.)*
-2. `waitFor([&]{ return m_server->scriptIndex() >= 8; }, std::chrono::seconds{5});`
-3. `auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});`
-4. `m_server->releaseExtractGate();`
+1. `waitFor([&]{ return m_server->scriptIndex() >= 8; }, std::chrono::seconds{5});`
+1. `auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});`
+1. `m_server->releaseExtractGate();`
 
 **Assertions (XFAIL — see message body):**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws, nullptr);
 const auto &run = ws->run();
@@ -228,7 +234,7 @@ const auto &run = ws->run();
 // below captures the intent.
 TSM_ASSERT(
     "XFAIL: pending fix for m_ignorePackets initialisation — see "
-    "SNSLiveEventDataListener.cpp:1601-1629 and "
+    "SNSLiveEventDataListener.cpp:1640-1668 and "
     "plans/ignore-packets-defect.md. "
     "The variable-cache replay path (replayVariableCache()) is "
     "unreachable because m_ignorePackets is never set true in start(). "
@@ -240,7 +246,7 @@ TSM_ASSERT(
     run.hasProperty("status"));
 ```
 
----
+______________________________________________________________________
 
 ## 5. §6.9 — Error propagation (3 tests)
 
@@ -249,9 +255,10 @@ TSM_ASSERT(
 **Purpose:** Garbage bytes cause `ADARA::invalid_packet` → the
 exception is stored in `m_backgroundException` and re-thrown on the
 next `runState()` or `extractData()` call. Covers
-`SNSLiveEventDataListener.cpp:316`.
+`SNSLiveEventDataListener.cpp:305-317`.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -264,13 +271,15 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener());`
-2. `waitFor([&]{ return m_server->scriptIndex() >= 3; }, std::chrono::seconds{5});`
+1. `waitFor([&]{ return m_server->scriptIndex() >= 3; }, std::chrono::seconds{5});`
    (Wait for garbage to be sent.)
-3. Call `m_listener->runStatus()` or `extractWithTimeout(...)` — one of
+1. Call `m_listener->runStatus()` or `extractWithTimeout(...)` — one of
    these must throw.
 
 **Assertions:**
+
 ```cpp
 bool threw = false;
 try {
@@ -291,7 +300,7 @@ observes EOF and transitions out of `Connected` state.
 >
 > `SNSLiveEventDataListener`'s background read loop does **not** currently
 > treat `Poco::Net::StreamSocket::receiveBytes()` returning 0 (EOF) as a
-> fatal event.  It therefore never transitions `m_isConnected` to `false`
+> fatal event. It therefore never transitions `m_isConnected` to `false`
 > on a clean peer-close; `isConnected()` and `listenerState()` remain in
 > the `Connected` state indefinitely after the server closes the socket.
 >
@@ -302,17 +311,18 @@ observes EOF and transitions out of `Connected` state.
 > **XFAIL convention:** follow the same inversion pattern used in
 > `test_LegacyConnectAndDisconnect` (see
 > `Framework/LiveData/test/SNSLiveEventDataListenerTest.h` in the
-> subspec04 commit).  Write the assertions as XFAIL-inverted `TSM_ASSERT`
+> subspec04 commit). Write the assertions as XFAIL-inverted `TSM_ASSERT`
 > calls that *currently pass* by observing the broken behaviour
 > (`isConnected() == true`, `listenerState() == Connected`) — the opposite
 > of the intended result.
 >
 > **When the production fix lands** (teach the read loop to treat
 > `receiveBytes() == 0` as EOF and transition `m_isConnected` to `false`):
+>
 > 1. File a defect ticket and backfill its ID into both this spec and the
 >    test's `TSM_ASSERT` message.
-> 2. Remove the XFAIL inversions in the same commit as the production fix.
-> 3. Restore the original intended-behaviour form of the test:
+> 1. Remove the XFAIL inversions in the same commit as the production fix.
+> 1. Restore the original intended-behaviour form of the test:
 >    ```cpp
 >    waitFor([&]{ return !m_listener->isConnected(); }, std::chrono::seconds{5});
 >    TS_ASSERT(!m_listener->isConnected());
@@ -321,6 +331,7 @@ observes EOF and transitions out of `Connected` state.
 >    ```
 
 **Script:**
+
 ```cpp
 m_server->script({
     Testing::buildGeometryPkt(kMinimalIDF),
@@ -333,14 +344,16 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener());`
-2. Wait for the server to have processed `PktDisconnect{}`:
+1. Wait for the server to have processed `PktDisconnect{}`:
    ```cpp
    waitFor([&]{ return m_server->scriptIndex() >= 4; }, std::chrono::seconds{5});
    std::this_thread::sleep_for(std::chrono::milliseconds{200});
    ```
 
 **Assertions (XFAIL — inverted, see note above):**
+
 ```cpp
 // XFAIL: the listener does not detect a clean peer-close.
 // Intended behaviour (after production fix): isConnected() == false.
@@ -374,29 +387,32 @@ listening must return `false` without throwing.
 **Script:** none — `m_server->start()` is NOT called.
 
 **Steps:**
+
 1. Construct the listener manually:
    ```cpp
    m_listener = std::make_unique<SNSLiveEventDataListener>();
    ```
    (Do **not** call `connectListener()`.)
-2. Build the address:
+1. Build the address:
    ```cpp
    Poco::Net::SocketAddress addr(
        Poco::Net::AddressFamily::UNIX_LOCAL, m_sockPath);
    ```
-3. `bool result = m_listener->connect(addr);`
+1. `bool result = m_listener->connect(addr);`
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT(!result);
 TS_ASSERT(!m_listener->isConnected());
 ```
 
----
+______________________________________________________________________
 
 ## 6. §6.10 — Monitor workspace routing (2 tests)
 
-Covers `SNSLiveEventDataListener.cpp:465-525, 1345-1362`.
+Covers `SNSLiveEventDataListener.cpp:470-530` (`rxPacket(BeamMonitorPkt)`)
+and `SNSLiveEventDataListener.cpp:1367-1383` (`initMonitorWorkspace()`).
 
 ### 6.1 `test_beamMonitorEvents_routedToMonitorWorkspace`
 
@@ -404,6 +420,7 @@ Covers `SNSLiveEventDataListener.cpp:465-525, 1345-1362`.
 sub-workspace, not in the main event workspace.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -419,12 +436,14 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener());`
-2. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, std::chrono::seconds{5});`
-3. `auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});`
-4. `m_server->releaseExtractGate();`
+1. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, std::chrono::seconds{5});`
+1. `auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});`
+1. `m_server->releaseExtractGate();`
 
 **Assertions:**
+
 ```cpp
 TS_ASSERT_DIFFERS(ws, nullptr);
 auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
@@ -443,10 +462,11 @@ TS_ASSERT_LESS_THAN(0, static_cast<int>(monEws->getNumberEvents()));
 
 **Purpose:** A monitor event with an unrecognised monitor ID is logged
 exactly once (the `m_badMonitors` dedup at
-`SNSLiveEventDataListener.cpp:515-519`) and the listener continues
+`SNSLiveEventDataListener.cpp:520-524`) and the listener continues
 processing subsequent packets without crashing.
 
 **Script:**
+
 ```cpp
 m_server->script({
     PKT(geometryPacketV0),
@@ -466,12 +486,14 @@ m_server->start();
 ```
 
 **Steps:**
+
 1. `TS_ASSERT(connectListener());`
-2. `waitFor([&]{ return m_server->scriptIndex() >= 6; }, std::chrono::seconds{5});`
-3. `auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});`
-4. `m_server->releaseExtractGate();`
+1. `waitFor([&]{ return m_server->scriptIndex() >= 6; }, std::chrono::seconds{5});`
+1. `auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});`
+1. `m_server->releaseExtractGate();`
 
 **Assertions:**
+
 ```cpp
 // The listener must continue operating (no crash, no error state).
 TS_ASSERT_DIFFERS(ws, nullptr);
@@ -483,14 +505,14 @@ TS_ASSERT_DIFFERS(ews, nullptr);
 TS_ASSERT_LESS_THAN(0, static_cast<int>(ews->getNumberEvents()));
 ```
 
----
+______________________________________________________________________
 
 ## 7. Known production defects surfaced by these tests (for reviewer)
 
 ### 7.1 `m_ignorePackets` never set to `true` in `start()`
 
-**File and line range:** `SNSLiveEventDataListener.cpp:193-209`
-(`start()`), `SNSLiveEventDataListener.cpp:1601-1629`
+**File and line range:** `SNSLiveEventDataListener.cpp:193-211`
+(`start()`), `SNSLiveEventDataListener.cpp:1640-1668`
 (`ignorePacket()`).
 
 **Description:** `start()` sets `m_filterUntilRunStart = true` when
@@ -514,49 +536,49 @@ assert the correct (fixed) behaviour and continue to pass.
 
 **See also:** [`plans/ignore-packets-defect.md`](../../ignore-packets-defect.md).
 
----
+______________________________________________________________________
 
 ## 8. TODO
 
 - [ ] Open `Framework/LiveData/test/SNSLiveEventDataListenerTest.h`.
 - [ ] Append the 7 `test_*` methods inside the existing class, after
-      the methods added in `subspec05`, in this order:
-      1. `test_filterUntilRunStart_dropsPreRunPackets`       (§4.1)
-      2. `test_variableCache_replayedAfterStartCondition`    (§4.2)
-      3. `test_invalidPacket_propagatesAsBackgroundException` (§5.1)
-      4. `test_serverDisconnect_setsErrorState`              (§5.2)
-      5. `test_connectFailure_returnsFalse`                  (§5.3)
-      6. `test_beamMonitorEvents_routedToMonitorWorkspace`   (§6.1)
-      7. `test_invalidMonitorId_logsOnceAndContinues`        (§6.2)
+  the methods added in `subspec05`, in this order:
+  1\. `test_filterUntilRunStart_dropsPreRunPackets` (§4.1)
+  2\. `test_variableCache_replayedAfterStartCondition` (§4.2)
+  3\. `test_invalidPacket_propagatesAsBackgroundException` (§5.1)
+  4\. `test_serverDisconnect_setsErrorState` (§5.2)
+  5\. `test_connectFailure_returnsFalse` (§5.3)
+  6\. `test_beamMonitorEvents_routedToMonitorWorkspace` (§6.1)
+  7\. `test_invalidMonitorId_logsOnceAndContinues` (§6.2)
 - [ ] Confirm both §4 tests are **registered and runnable** (not
-      `#if 0`-ed out, not skipped at runtime) and include the verbatim
-      `TSM_ASSERT*` message text shown in §4.
+  `#if 0`-ed out, not skipped at runtime) and include the verbatim
+  `TSM_ASSERT*` message text shown in §4.
 - [ ] Confirm `test_connectFailure_returnsFalse` does **not** call
-      `connectListener()` and does **not** call `m_server->start()`.
+  `connectListener()` and does **not** call `m_server->start()`.
 - [ ] Confirm `test_invalidPacket_propagatesAsBackgroundException`
-      uses a single `try { … } catch (...) { threw = true; }` around
-      *both* the `runStatus()` and `extractWithTimeout(...)` calls, as
-      shown in §5.1.
+  uses a single `try { … } catch (...) { threw = true; }` around
+  *both* the `runStatus()` and `extractWithTimeout(...)` calls, as
+  shown in §5.1.
 - [ ] Confirm both §6 tests check `ews->monitorWorkspace()` is non-null
-      (§6.1) and that the listener does **not** transition to `Error`
-      on unknown monitor ID (§6.2).
+  (§6.1) and that the listener does **not** transition to `Error`
+  on unknown monitor ID (§6.2).
 - [ ] Confirm no `TestableSNSListener` reference is introduced.
 - [ ] After committing, count the total `test_*` methods in
-      `SNSLiveEventDataListenerTest.h`: the answer must be exactly 22
-      (1 + 8 + 6 + 7).
+  `SNSLiveEventDataListenerTest.h`: the answer must be exactly 22
+  (1 + 8 + 6 + 7).
 
----
+______________________________________________________________________
 
 ## 9. Definition of done for this commit (and for the PR)
 
 1. `SNSLiveEventDataListenerTest.h` contains the 7 new `test_*` methods
    listed in §8, appended after the methods from `subspec05`.
-2. The total number of `test_*` methods in the file is exactly **22**.
-3. The two §4 XFAIL tests are compiled and registered (not commented
+1. The total number of `test_*` methods in the file is exactly **22**.
+1. The two §4 XFAIL tests are compiled and registered (not commented
    out, not gated, not `#if 0`-ed).
-4. No file outside `SNSLiveEventDataListenerTest.h` is modified by
+1. No file outside `SNSLiveEventDataListenerTest.h` is modified by
    this commit.
-5. No `TestableSNSListener` reference is introduced.
-6. The whole-PR §6 Definition-of-Done in `overview-spec.md` is now
+1. No `TestableSNSListener` reference is introduced.
+1. The whole-PR §6 Definition-of-Done in `overview-spec.md` is now
    satisfied for items 1–4 and 7 (the agent's deliverables).
    Items 5, 6, and 8 are reviewer-verified at PR review time.
