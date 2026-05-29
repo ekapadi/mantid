@@ -100,9 +100,7 @@ protected:
  * Unit tests for SNSLiveEventDataListener that do not require a live SMS
  * network connection.
  *
- * Tests that require a running SMS server live in SNSLiveEventDataListenerTest.h,
- * which is excluded from the ctest suite until it can be refactored to mock
- * the connection.
+ * Tests that require a running SMS server live in SNSLiveEventDataListenerTest.h.
  */
 class SNSLiveEventDataListenerNoNetworkTest : public CxxTest::TestSuite {
 public:

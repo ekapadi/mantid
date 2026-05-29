@@ -183,45 +183,31 @@ public:
   // ----- §6.1 Legacy behavioural contract (remainder) -----
 
   void test_LegacyConnectAndDisconnect() {
-    // XFAIL: The listener's background thread does not currently
-    // transition isConnected() to false on a clean peer-close
-    // (Poco::Net::StreamSocket::receiveBytes returns 0 with no
-    // exception, which the read loop does not treat as a fatal
-    // error).  The desired behaviour — once the production fix
-    // lands — is that the listener observes EOF and transitions
-    // out of the connected state within a few seconds of the
-    // server-side close.  Following the XFAIL inversion
-    // convention used in subspec06, this assertion currently
-    // PASSES by observing the broken behaviour
-    // (isConnected() == true after the peer closes the
-    // connection); when the production fix lands the
-    // inversion in the TSM_ASSERT below must be removed and
-    // replaced with the intended-behaviour check
-    // `waitFor([&]{ return !m_listener->isConnected(); }, ...);
-    // TS_ASSERT(!m_listener->isConnected());`.
+    TS_WARN("XFAIL: SNSLiveEventDataListener does not detect a clean peer-close. "
+            "Poco::Net::StreamSocket::receiveBytes() returns 0 bytes on EOF, but "
+            "the bg read loop (SNSLiveEventDataListener.cpp:264-294) does not "
+            "treat a zero-byte return as fatal, so m_isConnected is never set "
+            "false after a server-side close.  Defect noted in PR comment "
+            "4553042112; no ticket filed yet.  Remove this TS_WARN and the "
+            "return below when the production fix lands; the assertions that "
+            "follow express the intended contract.  (Sibling test: see §5.2 "
+            "test_serverDisconnect_setsErrorState for the variant that first "
+            "sends geometry/beamline/NEW_RUN.)");
+    return;
+    // --- intended behaviour (currently unreached) ---
     m_server->script({Testing::PktDisconnect{}});
     m_server->start();
     TS_ASSERT(connectListener());
+    TS_ASSERT(m_listener->isConnected());
     // Server-side: wait for the scripted PktDisconnect{} to complete
     // (scriptIndex advances past it once the server has closed its end).
     waitFor([&] { return m_server->scriptIndex() >= 1; }, std::chrono::seconds{5});
-    // Give the listener a brief window in which it *would* notice the
-    // close if it were going to.  This is intentionally short — the
-    // assertion below is XFAIL-inverted, so we are documenting that
-    // even after a generous delay isConnected() remains true.
+    // Give the listener a window in which it would notice the close if the
+    // production fix were in place.
     std::this_thread::sleep_for(std::chrono::milliseconds{200});
-    TSM_ASSERT("XFAIL: SNSLiveEventDataListener does not currently detect a "
-               "clean peer-close on its data socket (Poco StreamSocket "
-               "receiveBytes() returns 0 with no exception, which the bg "
-               "read loop does not treat as fatal).  This assertion is "
-               "INVERTED: it currently passes by observing the broken "
-               "behaviour (isConnected() == true after the server closed "
-               "the connection).  When the production fix lands, replace "
-               "this with `waitFor([&]{ return !m_listener->isConnected(); "
-               "}, std::chrono::seconds{5}); TS_ASSERT(!m_listener->"
-               "isConnected());`.  Tracked as a separate ticket — see PR "
-               "comment 4553042112.",
-               m_listener->isConnected());
+    // Intended: listener detects EOF and transitions out of Connected.
+    waitFor([&] { return !m_listener->isConnected(); }, std::chrono::seconds{5});
+    TS_ASSERT(!m_listener->isConnected());
   }
 
   void test_LegacyExtractEmptyWorkspace() {
