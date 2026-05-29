@@ -803,6 +803,74 @@ public:
     TS_ASSERT_EQUALS(static_cast<int>(ews->getNumberEvents()), 3);
   }
 
+  void test_allDetectorPixels_retained() {
+    m_server->script({
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 12, 0x0000000100000000ULL),
+        Testing::buildBankedEventPkt(0x0000000100000000ULL, 1000.0, {{100u, 1u}, {200u, 2u}, {300u, 3u}}),
+        Testing::PktWaitForExtract{},
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&] { return m_server->scriptIndex() >= 4; }, std::chrono::seconds{5});
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate();
+    TS_ASSERT_DIFFERS(ws, nullptr);
+    auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
+    TS_ASSERT_DIFFERS(ews, nullptr);
+    TS_ASSERT_EQUALS(static_cast<int>(ews->getNumberEvents()), 3);
+  }
+
+  void test_monitorEvents_recorded_onMainRun() {
+    m_server->script({
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 13, 0x0000000100000000ULL),
+        Testing::buildBankedEventPkt(0x0000000100000000ULL, 1000.0, {{100u, 1u}, {200u, 2u}, {300u, 3u}}),
+        Testing::buildBeamMonitorPkt(0x0000000100000000ULL, 0u, {500u, 600u}),
+        Testing::PktWaitForExtract{},
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&] { return m_server->scriptIndex() >= 5; }, std::chrono::seconds{5});
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate();
+    TS_ASSERT_DIFFERS(ws, nullptr);
+    auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
+    TS_ASSERT_DIFFERS(ews, nullptr);
+    TS_ASSERT_EQUALS(static_cast<int>(ews->getNumberEvents()), 3);
+    TS_ASSERT(ews->run().hasProperty("monitor0_counts"));
+    TS_ASSERT_EQUALS(ews->run().getPropertyValueAsType<int>("monitor0_counts"), 2);
+  }
+
+  void test_outOfRangePixels_excluded() {
+    m_server->script({
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 14, 0x0000000100000000ULL),
+        Testing::buildBankedEventPkt(
+            0x0000000100000000ULL, 1000.0,
+            {{100u, 1u}, {200u, 2u}, {300u, 3u}, {400u, 4u}, {500u, 5u}, {600u, 6u}, {700u, 7u}, {800u, 8u}}),
+        Testing::PktWaitForExtract{},
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&] { return m_server->scriptIndex() >= 4; }, std::chrono::seconds{5});
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate();
+    TS_ASSERT_DIFFERS(ws, nullptr);
+    auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
+    TS_ASSERT_DIFFERS(ews, nullptr);
+    TS_ASSERT_EQUALS(static_cast<int>(ews->getNumberEvents()), 3);
+  }
+
 private:
   // Each behavioural test calls this AFTER queuing the server script.
   // Returns true on success.  Builds the UDS SocketAddress via the

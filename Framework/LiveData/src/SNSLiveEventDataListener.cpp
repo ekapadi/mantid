@@ -1339,7 +1339,7 @@ void SNSLiveEventDataListener::initWorkspacePart2() {
   // repopulated when we receive the next geometry packet.
 
   auto tmp =
-      createWorkspace<DataObjects::EventWorkspace>(m_eventBuffer->getInstrument()->getDetectorIDs(true).size(), 2, 1);
+      createWorkspace<DataObjects::EventWorkspace>(m_eventBuffer->getInstrument()->getDetectorIDs(false).size(), 2, 1);
   WorkspaceFactory::Instance().initializeFromParent(*m_eventBuffer, *tmp, true);
   if (m_eventBuffer->getNumberHistograms() != tmp->getNumberHistograms()) {
     // need to generate the spectra to detector map
