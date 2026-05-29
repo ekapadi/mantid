@@ -8,15 +8,15 @@
 #ifndef _WIN32
 
 #include "MockSMSServer.h"
-#include "ADARAPackets.h"            // binary exemplar arrays
-#include "MantidKernel/Logger.h"     // g_log.fatal for abort path
+#include "ADARAPackets.h"        // binary exemplar arrays
+#include "MantidKernel/Logger.h" // g_log.fatal for abort path
 #include <Poco/Net/NetException.h>
 #include <Poco/Net/ServerSocket.h>
 #include <Poco/Net/SocketAddress.h>
 #include <Poco/Net/StreamSocket.h>
 #include <Poco/Thread.h>
 #include <sys/socket.h>
-#include <unistd.h>                  // ::unlink
+#include <unistd.h> // ::unlink
 
 #include <atomic>
 #include <cassert>
@@ -318,8 +318,7 @@ struct TestWatchdog::Impl {
   std::atomic<bool> m_armed{true};
   std::thread m_thread;
 
-  Impl(std::chrono::seconds deadline, std::string testName)
-      : m_deadline(deadline), m_testName(std::move(testName)) {
+  Impl(std::chrono::seconds deadline, std::string testName) : m_deadline(deadline), m_testName(std::move(testName)) {
     m_thread = std::thread([this] {
       auto end = std::chrono::steady_clock::now() + m_deadline;
       while (m_armed.load()) {
@@ -537,8 +536,7 @@ std::vector<uint8_t> buildResumePkt() {
 //   Tests that assert getNumberEvents() > 0 therefore require a
 //   real bank ID (< 0xFFFFFFFE) here.
 // Events: pairs of (TOF u32, pixel ID u32) = 8 bytes each
-std::vector<uint8_t> buildBankedEventPkt(uint64_t pulseId, double pulseChargePc,
-                                         std::vector<PixelTof> const &events) {
+std::vector<uint8_t> buildBankedEventPkt(uint64_t pulseId, double pulseChargePc, std::vector<PixelTof> const &events) {
   // Fixed fields + 1 source section + 1 bank section + events
   // payload = 16 (fixed) + 16 (source hdr) + 8 (bank hdr) + 8*N (events)
   const uint32_t nEvents = static_cast<uint32_t>(events.size());
@@ -549,27 +547,27 @@ std::vector<uint8_t> buildBankedEventPkt(uint64_t pulseId, double pulseChargePc,
   pkt.reserve(totalLen);
 
   // ADARA header
-  appendU32LE(pkt, payloadLen);                // payload length
-  appendU32LE(pkt, 0x00400001u);               // type/ver BANKED_EVENT v1
-  appendU32LE(pkt, static_cast<uint32_t>(pulseId >> 32));    // pulse ID seconds
+  appendU32LE(pkt, payloadLen);                                  // payload length
+  appendU32LE(pkt, 0x00400001u);                                 // type/ver BANKED_EVENT v1
+  appendU32LE(pkt, static_cast<uint32_t>(pulseId >> 32));        // pulse ID seconds
   appendU32LE(pkt, static_cast<uint32_t>(pulseId & 0xFFFFFFFF)); // pulse ID nanos
 
   // Fixed fields (from bankedEventPacketV1 bytes 16–31)
   auto chargeUnits = static_cast<uint32_t>(pulseChargePc / 10.0); // 10 pC per unit
-  appendU32LE(pkt, chargeUnits);               // pulse charge (units of 10 pC)
-  appendU32LE(pkt, 0u);                        // pulse energy (eV) — 0 for tests
-  appendU32LE(pkt, 0u);                        // accelerator cycle — 0 for tests
-  appendU32LE(pkt, 0x00400003u);               // veto flags | flags (from fixture byte 28)
+  appendU32LE(pkt, chargeUnits);                                  // pulse charge (units of 10 pC)
+  appendU32LE(pkt, 0u);                                           // pulse energy (eV) — 0 for tests
+  appendU32LE(pkt, 0u);                                           // accelerator cycle — 0 for tests
+  appendU32LE(pkt, 0x00400003u);                                  // veto flags | flags (from fixture byte 28)
 
   // Source section header (bytes 32–47 in a typical fixture)
-  appendU32LE(pkt, 0u);                        // source ID
-  appendU32LE(pkt, 0u);                        // intra-pulse time
-  appendU32LE(pkt, 0u);                        // COR+TOF offset
-  appendU32LE(pkt, 1u);                        // bank count = 1
+  appendU32LE(pkt, 0u); // source ID
+  appendU32LE(pkt, 0u); // intra-pulse time
+  appendU32LE(pkt, 0u); // COR+TOF offset
+  appendU32LE(pkt, 1u); // bank count = 1
 
   // Bank section header
-  appendU32LE(pkt, 0u);                        // bank ID = 0 (first real detector bank)
-  appendU32LE(pkt, nEvents);                   // event count
+  appendU32LE(pkt, 0u);      // bank ID = 0 (first real detector bank)
+  appendU32LE(pkt, nEvents); // event count
 
   // Events
   for (const auto &ev : events) {
@@ -582,62 +580,50 @@ std::vector<uint8_t> buildBankedEventPkt(uint64_t pulseId, double pulseChargePc,
 }
 
 // buildBeamMonitorPkt — reference beamMonitorPacketV1[136]
-// (ADARAPackets.h layout diagram at ~line 92)
+// (test/ADARAPackets.h:92; parser: src/ADARA/ADARAPackets.cpp:321-378)
 // Variable-length: TOF count varies per call.
-// Justification: TOF count varies per call.
 //
-// Packet layout (from beamMonitorPacketV1):
-//   Byte  0–3:  payload length
-//   Byte  4–7:  type/ver = 0x00400101 (BEAM_MONITOR v1)
-//   Byte  8–11: pulse ID seconds
-//   Byte 12–15: pulse ID nanos
+// Packet layout — ADARA header (16B, not part of payload) followed by payload:
 //   Byte 16–19: pulse charge
 //   Byte 20–23: pulse energy
 //   Byte 24–27: accelerator cycle
 //   Byte 28–31: veto flags | flags
-//   Byte 32+:   EventCount(16b) | MonID(16b), then events (4 bytes each TOF)
-//
-// Monitor section: 4-byte word = eventCount (upper 16b) | monitorId (lower 16b),
-// followed by eventCount*4 bytes of TOF data, then 4 bytes of zero padding per event
-// (based on beamMonitorPacketV1 structure: each event is 8 bytes in the fixture)
-//
-// Ref: ADARAPackets.cpp BeamMonitorPkt parsing — each event is 8 bytes:
-//   high 32b = TOF tick, low 32b = source/event flags
-std::vector<uint8_t> buildBeamMonitorPkt(uint64_t pulseId, uint32_t monitorId,
-                                         std::vector<uint32_t> const &tofs) {
-  // Payload = 16 (fixed header fields) + 4 (monitor header word) + 8*N (events)
+// Per-section (one section per call):
+//   Word 0: bits 31:22 = monitorId (10 bits), bits 21:0 = eventCount (22 bits)
+//           (Parser: BeamMonitorPkt::getSectionMonitorID() >> 22;
+//                    BeamMonitorPkt::getSectionEventCount() & 0x003FFFFF)
+//   Word 1: sourceID
+//   Word 2: bit 31 = TOFCorrected flag, bits 30:0 = TOFOffset
+//   Words 3..: one uint32 per event — bit 31 = risingEdge, bits 30:21 = cycle,
+//              bits 20:0 = TOF (100 ns units)
+// payloadLen = 16 (fixed) + 12 (section header) + 4 * N (events)
+std::vector<uint8_t> buildBeamMonitorPkt(uint64_t pulseId, uint32_t monitorId, std::vector<uint32_t> const &tofs) {
   const uint32_t nTofs = static_cast<uint32_t>(tofs.size());
-  const uint32_t payloadLen = 16 + 4 + 8 * nTofs;
-  const uint32_t totalLen = 16 + payloadLen;
+  const uint32_t payloadLen = 16 + 12 + 4 * nTofs;
 
   std::vector<uint8_t> pkt;
-  pkt.reserve(totalLen);
+  pkt.reserve(16 + payloadLen);
 
   // ADARA header
   appendU32LE(pkt, payloadLen);
-  appendU32LE(pkt, 0x00400101u);               // type/ver BEAM_MONITOR v1
+  appendU32LE(pkt, 0x00400101u); // type/ver BEAM_MONITOR v1
   appendU32LE(pkt, static_cast<uint32_t>(pulseId >> 32));
   appendU32LE(pkt, static_cast<uint32_t>(pulseId & 0xFFFFFFFF));
 
-  // Fixed fields (set to zero for tests)
+  // Fixed fields (zero for tests)
   appendU32LE(pkt, 0u); // pulse charge
   appendU32LE(pkt, 0u); // pulse energy
   appendU32LE(pkt, 0u); // accelerator cycle
   appendU32LE(pkt, 0u); // veto flags | flags
 
-  // Monitor section header: EventCount(upper 16b) | MonID(lower 16b)
-  // From beamMonitorPacketV1 byte 32 comment: EventCount & MonID
-  uint32_t monitorHdr = ((nTofs & 0xFFFFu) << 16) | (monitorId & 0xFFFFu);
-  // Also set the GOT_METADATA and GOT_NEUTRONS flags per fixture (upper bits)
-  // bit 30 = 0x40000000 (GOT_METADATA), based on fixture value 0x00400017
-  // For simplicity use the same encoding as beamMonitorPacketV1 byte 32: upper 2 bytes are count
-  monitorHdr = (nTofs << 16) | (monitorId & 0xFFFFu);
-  appendU32LE(pkt, monitorHdr);
+  // Section header: monitorId in upper 10 bits, eventCount in lower 22 bits
+  appendU32LE(pkt, ((monitorId & 0x3FFu) << 22) | (nTofs & 0x003FFFFFu));
+  appendU32LE(pkt, 0u); // sourceID
+  appendU32LE(pkt, 0u); // TOFCorrected (bit 31) | TOFOffset
 
-  // Events: each is 8 bytes (TOF, then padding/flags = 0)
+  // Events: risingEdge(31) | cycle(30:21) | TOF(20:0); tests supply TOF only
   for (uint32_t tof : tofs) {
-    appendU32LE(pkt, tof);
-    appendU32LE(pkt, 0u); // padding / source event flags
+    appendU32LE(pkt, tof & 0x001FFFFFu);
   }
 
   assertPayloadLen(pkt);
@@ -657,8 +643,8 @@ std::vector<uint8_t> buildBeamMonitorPkt(uint64_t pulseId, uint32_t monitorId,
 // the root would throw SAXParseException; using "<title>" would silently
 // leave the run-title property empty.
 std::vector<uint8_t> buildRunInfoPkt(const std::string &proposalId, const std::string &title) {
-  std::string xml = "<runinfo><proposal_id>" + proposalId + "</proposal_id><run_title>" + title +
-                    "</run_title></runinfo>";
+  std::string xml =
+      "<runinfo><proposal_id>" + proposalId + "</proposal_id><run_title>" + title + "</run_title></runinfo>";
   // Pad XML to 4-byte boundary
   std::size_t xmlLen = xml.size();
   std::size_t paddedLen = (xmlLen + 3) & ~std::size_t{3};
