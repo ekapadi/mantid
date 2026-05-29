@@ -654,7 +654,9 @@ public:
     // runState() must remain Running — pause/resume annotations do not alter it.
     TS_ASSERT_EQUALS(m_listener->runStatus(), API::ILiveListener::Running);
     // The 'pause' time series property must have been populated by the annotation.
-    TS_ASSERT(ws->run().hasProperty("pause"));
+    auto mws = std::dynamic_pointer_cast<API::MatrixWorkspace>(ws);
+    TS_ASSERT_DIFFERS(mws, nullptr);
+    TS_ASSERT(mws->run().hasProperty("pause"));
   }
 
   void test_pausedEvents_droppedByDefault() {
