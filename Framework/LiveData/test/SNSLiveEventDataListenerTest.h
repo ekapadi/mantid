@@ -478,29 +478,46 @@ public:
   }
 
   // ----- §6.4 C1 fix — lastTransition survives NotYet -----
+  //
+  // NotYet is the normal-operation signal that extractData() emits when the
+  // workspace has not yet been initialised (doExtractData() at
+  // SNSLiveEventDataListener.cpp:1432-1497 polls m_workspaceInitialized for
+  // 10 s then throws).  The usual trigger is receiving NEW_RUN before the
+  // Geometry / Beamline packets arrive, or receiving a second NEW_RUN (after
+  // onBeginRun() has cleared m_workspaceInitialized) before new geometry
+  // arrives.
+  //
+  // C1 guarantee (LiveListener.cpp:16-21): when doExtractData() throws,
+  // onAfterExtract() is NOT invoked, so the m_lastTransition reset at
+  // SNSLiveEventDataListener.cpp:1566 is bypassed.
 
   void test_lastTransition_preservedAcrossNotYet() {
-    // Two consecutive NEW_RUNs are needed to exercise the C1 structural
-    // guarantee:
-    //   NEW_RUN #87 — white-lie path (workspace not yet initialised at
-    //     the time rxPacket(RunStatusPkt) runs, :658-703): m_pendingTransition
-    //     NOT set; initWorkspacePart2() triggered at :792-797.
-    //   NEW_RUN #88 — normal path (workspace now initialised, :651-657):
-    //     m_pendingTransition = BeginRun; m_pauseNetRead = true.
-    // The first extractData() dispatches onBeginRun() (:1585-1612), which
-    // wipes m_instrumentXML / m_instrumentName (m_workspaceInitialized=false).
-    // No new geometry arrives while gate 1 holds, so doExtractData() times
-    // out (10 s) and throws NotYet.
-    // C1 guarantee (LiveListener.cpp:16-21): onAfterExtract() is NOT called
-    // on the NotYet path, so the reset at SNSLiveEventDataListener.cpp:1566
-    // is bypassed and the BeginRun slot set in onBeforeExtract() at :1555
-    // survives.
+    // Drive the C1 path via the realistic SMS connect handshake:
+    //
+    //   STATE(runNumber=0) — the RunStatus packet SMS sends on initial
+    //     connect when no run history is requested (comment at :778-787).
+    //     Sets m_dataStartTime at :627 but does NOT call setRunDetails()
+    //     (runNumber==0 check at :785), so run_number is NOT added to
+    //     m_eventBuffer.  Together with prior Geometry+Beamline, workspace
+    //     initialises via initWorkspacePart2() at :793-797 without haveRunNumber.
+    //
+    //   NEW_RUN(10) arrives with m_workspaceInitialized==true and
+    //     !haveRunNumber → normal branch at :651-657 sets
+    //     m_pendingTransition=BeginRun; :706-725 stashes m_deferredRunDetailsPkt;
+    //     :729-731 sets m_pauseNetRead=true.
+    //
+    // First extract: onBeforeExtract() dispatches onBeginRun() (:1552),
+    // which clears m_workspaceInitialized (:1590); m_lastTransition=BeginRun
+    // set at :1555; m_pauseNetRead cleared at :1557.  doExtractData() polls
+    // 10 s for m_workspaceInitialized — no new geometry arrives while gate 1
+    // holds — and throws NotYet.  C1: onAfterExtract() is NOT called, so the
+    // reset at :1566 is bypassed and m_lastTransition stays BeginRun.
     m_server->script({
         Testing::buildGeometryPkt(kMinimalIDF()),
         Testing::buildBeamlineInfoPkt(kInstrumentName),
-        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 87,
-                                   0x0000000100000000ULL), // white-lie → inits ws
-        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 88,
+        Testing::buildRunStatusPkt(ADARA::RunStatus::STATE, 0,
+                                   0x0000000100000000ULL), // SMS connect handshake
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 10,
                                    0x0000000200000000ULL), // normal → m_pendingTransition=BeginRun
         Testing::PktWaitForExtract{},                      // gate 1 (index 4 → scriptIndex 5)
         Testing::buildGeometryPkt(kMinimalIDF()),
@@ -521,11 +538,11 @@ public:
     try {
       extractWithTimeout(*m_listener, std::chrono::seconds{15});
     } catch (const std::exception &) {
-      // NotYet (or bg exception) — expected on this path.
+      // NotYet — expected on this path.
     }
 
-    // C1 fix: m_lastTransition must still be BeginRun — the NotYet path
-    // did NOT invoke onAfterExtract(), so the reset at :1566 was bypassed.
+    // C1 fix: m_lastTransition must still be BeginRun — onAfterExtract() was
+    // NOT invoked when doExtractData() threw, so the reset at :1566 was bypassed.
     TS_ASSERT(m_listener->lastTransition().has_value());
     TS_ASSERT_EQUALS(*m_listener->lastTransition(), API::ILiveListener::BeginRun);
 
@@ -538,9 +555,60 @@ public:
     TS_ASSERT_DIFFERS(ws2, nullptr);
   }
 
-  // ----- §6.5 Back-pressure observables -----
+  void test_notYet_whenGeometryDelayed() {
+    // Normal-operation NotYet path: NEW_RUN arrives before Geometry/Beamline.
+    // The white-lie branch at :658-703 calls setRunDetails() (run_number added)
+    // but readyForInitPart2() returns false (no instrumentXML/instrumentName
+    // yet), so m_workspaceInitialized stays false.  doExtractData() polls 10 s
+    // and throws NotYet.  Then Geometry+Beamline arrive → bg thread calls
+    // initWorkspacePart2() at the end of rxPacket(BeamlineInfoPkt) (:609-610)
+    // → m_workspaceInitialized=true.  The subsequent extract succeeds.
+    m_server->script({
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 20,
+                                   0x0000000100000000ULL), // before geometry
+        Testing::PktWaitForExtract{},                      // gate 1 (index 1 → scriptIndex 2)
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        Testing::buildBankedEventPkt(0x0000000200000000ULL, 1000.0, {{100u, 1u}}),
+        Testing::PktWaitForExtract{}, // gate 2 (index 5 → scriptIndex 6)
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    // Wait for server to have entered gate 1 (NEW_RUN sent; server holding).
+    waitFor([&] { return m_server->scriptIndex() >= 2; }, std::chrono::seconds{5});
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+
+    // First extract: workspace not yet initialised → NotYet after 10 s poll.
+    // 15 s timeout lets the internal poll fire before the outer timeout fires.
+    bool gotNotYet = false;
+    try {
+      extractWithTimeout(*m_listener, std::chrono::seconds{15});
+    } catch (const std::exception &) {
+      gotNotYet = true;
+    }
+    TSM_ASSERT("first extract must throw NotYet when Geometry has not yet arrived", gotNotYet);
+
+    // Listener must be in a sane state — no spurious back-pressure, no stored
+    // background exception.
+    TS_ASSERT_DIFFERS(m_listener->listenerState(), API::ListenerState::Error);
+
+    m_server->releaseExtractGate(); // gate 1 → server sends Geometry+Beamline+event
+    waitFor([&] { return m_server->scriptIndex() >= 6; }, std::chrono::seconds{5});
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+
+    // Second extract: workspace now initialised; 1 event expected.
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate(); // gate 2
+    TS_ASSERT_DIFFERS(ws, nullptr);
+    auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
+    TS_ASSERT_DIFFERS(ews, nullptr);
+    TS_ASSERT_EQUALS(static_cast<int>(ews->getNumberEvents()), 1);
+  }
+
+  // ----- §6.5 Back-pressure observables / consecutive-NEW_RUN error -----
   //
-  // Note: the single-slot invariant throws at
+  // The single-slot invariant throws at
   // SNSLiveEventDataListener.cpp:651-655 (BeginRun-side) and :744-748
   // (END_RUN-side) are unreachable over a real socket.  Both throws require
   // m_pendingTransition to be occupied when a NEW_RUN or END_RUN arrives, but
@@ -553,43 +621,64 @@ public:
   //   SNSLiveEventDataListenerNoNetworkTest::
   //       test_rxRunStatusPkt_newRun_throws_when_slot_occupied()
   //       test_rxRunStatusPkt_endRun_throws_when_slot_occupied()
+  //
+  // Consecutive NEW_RUN packets (without an intervening END_RUN) are a
+  // distinct malformed-stream case detected earlier in rxPacket(RunStatusPkt),
+  // at :706-725: the first NEW_RUN (white-lie path) calls setRunDetails(),
+  // setting run_number; the second NEW_RUN reaches the deferred-packet stash
+  // site with haveRunNumber==true and throws std::runtime_error.  The bg-thread
+  // catch (:318-326) stores it in m_backgroundException; doExtractData()
+  // re-throws at :1444-1450.
 
-  void test_doubleBeginRun_surfacesError_viaBackPressureCascade() {
-    // The first NEW_RUN (white-lie path, m_workspaceInitialized=false at
-    // arrival) initialises the workspace via initWorkspacePart2().
-    // The second NEW_RUN (normal path, m_workspaceInitialized=true) sets
-    // m_pendingTransition=BeginRun and m_pauseNetRead=true.
-    // extractData() dispatches onBeginRun() which clears m_instrumentXML,
-    // m_instrumentName, and m_workspaceInitialized.  No new geometry arrives
-    // (server has disconnected), so doExtractData() polls 10 s and throws
-    // NotYet.  Either a thrown exception or a ListenerState::Error surface is
-    // accepted.
+  void test_consecutiveNewRun_surfacesRuntimeError() {
+    // Two consecutive NEW_RUN packets (different run numbers) without an
+    // intervening END_RUN.  The first goes through the white-lie path at
+    // :658-703 (m_workspaceInitialized=false at arrival → calls setRunDetails,
+    // adding run_number; initWorkspacePart2 → m_workspaceInitialized=true).
+    // The second hits the normal branch at :651-657 (m_workspaceInitialized=true)
+    // and reaches the deferred-packet stash at :706-725 with haveRunNumber==true
+    // → throws runtime_error; bg-thread catch stores it in m_backgroundException;
+    // doExtractData() re-throws at :1444-1450.
     m_server->script({
         Testing::buildGeometryPkt(kMinimalIDF()),
         Testing::buildBeamlineInfoPkt(kInstrumentName),
-        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 1,
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 10,
                                    0x0000000100000000ULL), // white-lie → inits ws
-        Testing::buildBankedEventPkt(0x0000000100000000ULL, 1000.0, {{100u, 1u}}),
-        // No extractData() gate — second NEW_RUN arrives without prior extract.
-        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 2,
-                                   0x0000000200000000ULL), // normal → m_pendingTransition=BeginRun
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 11,
+                                   0x0000000200000000ULL), // throws at :706-725
         Testing::PktDisconnect{},
     });
     m_server->start();
     TS_ASSERT(connectListener());
     waitFor([&] { return m_server->scriptIndex() >= 5; }, std::chrono::seconds{5});
-    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
 
-    bool gotError = false;
-    try {
-      auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{15});
-      gotError = (ws == nullptr) || (m_listener->listenerState() == API::ListenerState::Error);
-    } catch (const std::exception &) {
-      gotError = true;
-    }
-    TSM_ASSERT("double-NEW_RUN without intervening extract must surface an error "
-               "(onBeginRun clears geometry state; NotYet after 10 s poll)",
-               gotError);
+    TS_ASSERT_THROWS(extractWithTimeout(*m_listener, std::chrono::seconds{5}), const std::runtime_error &);
+    // Listener must not be wedged: m_pauseNetRead was not set before the throw
+    // (:729-731 is after :706-725), so a second extract re-throws the stored
+    // background exception promptly rather than blocking on back-pressure.
+    TS_ASSERT_THROWS(extractWithTimeout(*m_listener, std::chrono::seconds{2}), const std::runtime_error &);
+  }
+
+  void test_repeatedNewRun_sameRunNumber_surfacesRuntimeError() {
+    // Same as test_consecutiveNewRun_surfacesRuntimeError but with the same
+    // run number repeated — the operational case of an operator restarting the
+    // same run without an intervening END_RUN.
+    m_server->script({
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 10,
+                                   0x0000000100000000ULL), // white-lie → inits ws
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 10,
+                                   0x0000000200000000ULL), // same run number → throws
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&] { return m_server->scriptIndex() >= 5; }, std::chrono::seconds{5});
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+
+    TS_ASSERT_THROWS(extractWithTimeout(*m_listener, std::chrono::seconds{5}), const std::runtime_error &);
   }
 
   void test_newRunEndRun_backPressureProducesReadWaitThenCleanEndRun() {
@@ -651,7 +740,7 @@ public:
     auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
     m_server->releaseExtractGate();
     TS_ASSERT_DIFFERS(ws, nullptr);
-    // runState() must remain Running — pause/resume annotations do not alter it.
+    // runStatus() must remain Running — pause/resume annotations do not alter it.
     TS_ASSERT_EQUALS(m_listener->runStatus(), API::ILiveListener::Running);
     // The 'pause' time series property must have been populated by the annotation.
     auto mws = std::dynamic_pointer_cast<API::MatrixWorkspace>(ws);

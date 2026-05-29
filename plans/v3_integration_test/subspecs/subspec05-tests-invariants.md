@@ -1,15 +1,16 @@
 # Sub-spec 05 — Invariant tests (C1 fix + single-slot back-pressure + pause/resume)
 
 **Primary spec:** [`overview-spec.md`](overview-spec.md).
-**Commit:** 5 of 6. Adds **6** test methods to the fixture, covering
+**Commit:** 5 of 6. Adds **8** test methods to the fixture, covering
 the v3-refactor invariants that are *visible* over the wire: the C1
-fix, the single-slot pending-transition invariant, and pause/resume
-orthogonality (including the `keepPausedEvents` config gate).
+fix, the single-slot back-pressure invariant, consecutive-NEW_RUN
+malformed-stream detection, and pause/resume orthogonality (including
+the `keepPausedEvents` config gate).
 
 | Section | Area                                      | Tests in this commit |
 | ------- | ----------------------------------------- | -------------------- |
-| 6.4     | C1 fix — `lastTransition` survives NotYet | 1                    |
-| 6.5     | Back-pressure single-slot invariant       | 2                    |
+| 6.4     | C1 fix — `lastTransition` survives NotYet | 2                    |
+| 6.5     | Back-pressure / consecutive-NEW_RUN error | 3                    |
 | 6.7     | Pause / resume                            | 3                    |
 
 §6.6 (`m_deferredRunDetailsPkt`) is **deliberately not** in this
@@ -17,7 +18,7 @@ commit — it is delegated to `SNSLiveEventDataListenerNoNetworkTest.h`
 and only referenced from the file-header doc comment that was added in
 `subspec03`.
 
-Total: 6 new `test_*` methods added to
+Total: 8 new `test_*` methods added to
 `Framework/LiveData/test/SNSLiveEventDataListenerTest.h`, appended
 after the methods from `subspec04`.
 
@@ -53,7 +54,21 @@ ______________________________________________________________________
    exercised by unit tests in `SNSLiveEventDataListenerNoNetworkTest`
    that feed raw packet bytes through the parser with pre-injected
    state (see `§5` below for details).
-1. **No production code changes.**
+   **Update (post-subspec05):** Consecutive NEW_RUN packets without an
+   intervening END_RUN are now detected earlier, at the deferred-packet
+   stash site in `rxPacket(RunStatusPkt)` (`:706-725`), where
+   `haveRunNumber==true` triggers a `std::runtime_error`. The bg-thread
+   catch at `:318-326` stores it in `m_backgroundException`;
+   `doExtractData()` re-throws at `:1444-1450`. This path IS reachable
+   over a real socket and is exercised by the two §5.1 integration tests
+   (`test_consecutiveNewRun_surfacesRuntimeError` and
+   `test_repeatedNewRun_sameRunNumber_surfacesRuntimeError`). NotYet is
+   the normal-operation signal for "workspace not yet initialised" — not
+   a consequence of consecutive NEW_RUNs — and is covered by the
+   redesigned §6.4 tests.
+1. **Production code change required.** `SNSLiveEventDataListener.cpp`
+   `:706-725` — the silent warning was promoted to `std::runtime_error`
+   to make the consecutive-NEW_RUN path surface cleanly.
 1. **One commit, all 6 tests.**
 
 ______________________________________________________________________
@@ -105,35 +120,97 @@ The shorthand `PKT(name)`, `BLD_RUN(...)`, `BLD_BANKED(...)`,
 
 ______________________________________________________________________
 
-## 4. §6.4 — C1 fix (1 test)
+## 4. §6.4 — C1 fix + NotYet behaviour (2 tests)
+
+NotYet is the normal-operation signal for "workspace not yet
+initialised": `doExtractData()` polls `m_workspaceInitialized` for
+10 s and throws if still false. The usual trigger is receiving NEW_RUN
+before Geometry / Beamline arrive, or receiving a new BeginRun-dispatch
+before new geometry arrives after `onBeginRun()` has cleared the flag.
 
 ### 4.1 `test_lastTransition_preservedAcrossNotYet`
 
-**Purpose:** `extractData()` on the NotYet path (workspace not yet
-initialised — Geometry not yet received) must not clobber
-`m_lastTransition`. The guarantee is structural:
-`API::LiveListener::extractData()` (`Framework/API/src/LiveListener.cpp:16-21`,
-contract documented at `Framework/API/inc/MantidAPI/LiveListener.h:37-46`)
-does not invoke `onAfterExtract()` when `doExtractData()` throws
-`NotYet`, so the reset at `SNSLiveEventDataListener.cpp:1566` is
-bypassed and the slot set by the prior `onBeforeExtract()` at
-`SNSLiveEventDataListener.cpp:1555` survives. After a subsequent
-extract that *does* succeed, `lastTransition()` must reflect the
-`BeginRun` transition, not a stale / default value.
+**Purpose:** The C1 structural guarantee
+(`API::LiveListener::extractData()`, `Framework/API/src/LiveListener.cpp:16-21`):
+when `doExtractData()` throws NotYet, `onAfterExtract()` is NOT
+invoked, so the `m_lastTransition` reset at
+`SNSLiveEventDataListener.cpp:1566` is bypassed and the slot set in
+`onBeforeExtract()` at `:1555` survives.
+
+Drive via the realistic SMS connect handshake: `STATE(runNumber=0)`
+(the RunStatus packet SMS sends on initial connect; comment at
+`:778-787`) plus Geometry + Beamline initialises the workspace without
+setting `run_number` (`haveRunNumber==false`). `NEW_RUN(10)` then hits
+the normal branch (`m_workspaceInitialized==true`, `!haveRunNumber`) →
+`m_pendingTransition=BeginRun`; `m_deferredRunDetailsPkt` stashed.
+First extract dispatches `onBeginRun()` (succeeds), sets
+`m_lastTransition=BeginRun`, clears `m_workspaceInitialized`.
+`doExtractData()` polls 10 s — no new geometry while gate 1 holds —
+throws NotYet. C1: `onAfterExtract()` not called → `m_lastTransition`
+stays `BeginRun`. Gate 1 released; new Geometry+Beamline+event arrive;
+second extract succeeds.
 
 **Script:**
 
 ```cpp
 m_server->script({
-    // Deliberately omit Geometry here so first extract() takes NotYet path.
-    Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 88,
-                                0x0000000100000000ULL),
-    PKT(bankedEventPacketV1),
-    Testing::PktWaitForExtract{},  // gate 1: first extract (NotYet)
-    PKT(geometryPacketV0),
-    PKT(beamlineInfoPacketV1),
-    PKT(bankedEventPacketV1),
-    Testing::PktWaitForExtract{},  // gate 2: second extract (succeeds)
+    Testing::buildGeometryPkt(kMinimalIDF()),
+    Testing::buildBeamlineInfoPkt(kInstrumentName),
+    Testing::buildRunStatusPkt(ADARA::RunStatus::STATE, 0,
+                                0x0000000100000000ULL), // SMS connect handshake
+    Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 10,
+                                0x0000000200000000ULL), // normal → m_pendingTransition=BeginRun
+    Testing::PktWaitForExtract{},                       // gate 1 (index 4 → scriptIndex 5)
+    Testing::buildGeometryPkt(kMinimalIDF()),
+    Testing::buildBeamlineInfoPkt(kInstrumentName),
+    Testing::buildBankedEventPkt(0x0000000300000000ULL, 1000.0, {{100u, 1u}}),
+    Testing::PktWaitForExtract{},  // gate 2 (index 8 → scriptIndex 9)
+    Testing::PktDisconnect{},
+});
+m_server->start();
+```
+
+**Steps:**
+
+1. `TS_ASSERT(connectListener());`
+1. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, std::chrono::seconds{5});`
+1. First extract with 15 s timeout (internal 10 s poll fires first):
+   ```cpp
+   try { extractWithTimeout(*m_listener, std::chrono::seconds{15}); }
+   catch (const std::exception &) { /* NotYet — expected */ }
+   ```
+1. Assert `m_lastTransition == BeginRun`.
+1. `m_server->releaseExtractGate();` *(gate 1)*
+1. `waitFor([&]{ return m_server->scriptIndex() >= 9; }, std::chrono::seconds{5});`
+1. `auto ws2 = extractWithTimeout(*m_listener, std::chrono::seconds{10});`
+1. `m_server->releaseExtractGate();` *(gate 2)*
+
+**Assertions:**
+
+```cpp
+TS_ASSERT(m_listener->lastTransition().has_value());
+TS_ASSERT_EQUALS(*m_listener->lastTransition(), API::ILiveListener::BeginRun);
+TS_ASSERT_DIFFERS(ws2, nullptr);
+```
+
+### 4.2 `test_notYet_whenGeometryDelayed` *(new)*
+
+**Purpose:** Verify that the listener correctly throws NotYet when
+NEW_RUN arrives before Geometry / Beamline, that it remains in a sane
+state (no back-pressure, no stored error), and that it recovers
+cleanly when Geometry subsequently arrives.
+
+**Script:**
+
+```cpp
+m_server->script({
+    Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 20,
+                                0x0000000100000000ULL), // before geometry
+    Testing::PktWaitForExtract{},                       // gate 1 (index 1 → scriptIndex 2)
+    Testing::buildGeometryPkt(kMinimalIDF()),
+    Testing::buildBeamlineInfoPkt(kInstrumentName),
+    Testing::buildBankedEventPkt(0x0000000200000000ULL, 1000.0, {{100u, 1u}}),
+    Testing::PktWaitForExtract{},  // gate 2 (index 5 → scriptIndex 6)
     Testing::PktDisconnect{},
 });
 m_server->start();
@@ -143,28 +220,23 @@ m_server->start();
 
 1. `TS_ASSERT(connectListener());`
 1. `waitFor([&]{ return m_server->scriptIndex() >= 2; }, std::chrono::seconds{5});`
-   (NEW_RUN and banked event sent before first extract.)
-1. First extract: `auto ws1 = extractWithTimeout(*m_listener, std::chrono::seconds{10});`
-   This may return `nullptr` (NotYet path) — that is expected.
-1. `m_server->releaseExtractGate();` *(release gate 1)*
+1. First extract with 15 s timeout — must throw NotYet.
+1. Assert `listenerState() != Error`.
+1. `m_server->releaseExtractGate();` *(gate 1)*
 1. `waitFor([&]{ return m_server->scriptIndex() >= 6; }, std::chrono::seconds{5});`
-   (Geometry + BeamlineInfo + events sent.)
-1. Second extract: `auto ws2 = extractWithTimeout(*m_listener, std::chrono::seconds{10});`
-1. `m_server->releaseExtractGate();` *(release gate 2)*
+1. `auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});`
+1. `m_server->releaseExtractGate();` *(gate 2)*
 
 **Assertions:**
 
 ```cpp
-TS_ASSERT_DIFFERS(ws2, nullptr);
-// lastTransition must be BeginRun — not reset to None by the NotYet path.
-TS_ASSERT_EQUALS(m_listener->lastTransition(),
-                 API::ILiveListener::RunTransition::BeginRun);
+TSM_ASSERT("first extract must throw NotYet when Geometry has not yet arrived", gotNotYet);
+TS_ASSERT_DIFFERS(m_listener->listenerState(), API::ListenerState::Error);
+TS_ASSERT_DIFFERS(ws, nullptr);
+auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
+TS_ASSERT_DIFFERS(ews, nullptr);
+TS_ASSERT_EQUALS(static_cast<int>(ews->getNumberEvents()), 1);
 ```
-
-(`ws1` is *not* asserted — its value depends on the production
-listener's choice of returning `nullptr` vs an empty workspace on the
-NotYet path, and either is acceptable behaviour. The invariant under
-test is solely about `lastTransition()` after the second extract.)
 
 ______________________________________________________________________
 
@@ -194,20 +266,18 @@ the socket by feeding raw packet bytes through the inherited
 The two integration tests below verify the *observable consequences*
 of the back-pressure mechanism instead.
 
-### 5.1 `test_doubleBeginRun_surfacesError_viaBackPressureCascade`
+### 5.1 `test_consecutiveNewRun_surfacesRuntimeError`
 
-**Purpose:** Two consecutive NEW_RUNs without an intervening
-`extractData()` surface as an error via the back-pressure cascade:
-NEW_RUN(1) takes the white-lie path (workspace not yet initialised)
-and initialises the workspace; NEW_RUN(2) takes the normal path
-(`m_workspaceInitialized=true`) and queues `BeginRun`.
-`extractData()` dispatches `onBeginRun()`, which clears geometry and
-instrument state; with no new geometry arriving, `doExtractData()`
-then polls for 10 s and throws `NotYet`. Either a thrown exception
-or a `ListenerState::Error` surface is accepted.
-
-The single-slot invariant throw at `:651-655` is NOT what fires here
-(see preamble above). The error surfaces via the cascade described.
+**Purpose:** Two consecutive NEW_RUN packets (different run numbers)
+without an intervening END_RUN are detected at the deferred-packet
+stash site in `rxPacket(RunStatusPkt)` (`:706-725`): the first NEW_RUN
+takes the white-lie path (sets `run_number` via `setRunDetails()`);
+the second hits the normal branch with `haveRunNumber==true` and throws
+`std::runtime_error`. The bg-thread catch at `:318-326` stores it in
+`m_backgroundException`; `doExtractData()` re-throws at `:1444-1450`.
+The listener must not wedge: `m_pauseNetRead` is NOT set before the
+throw (`:729-731` follows `:706-725`), so a second extract re-throws
+the stored exception promptly.
 
 **Script:**
 
@@ -215,12 +285,10 @@ The single-slot invariant throw at `:651-655` is NOT what fires here
 m_server->script({
     Testing::buildGeometryPkt(kMinimalIDF()),
     Testing::buildBeamlineInfoPkt(kInstrumentName),
-    Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 1,
+    Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 10,
                                 0x0000000100000000ULL), // white-lie → inits ws
-    Testing::buildBankedEventPkt(0x0000000100000000ULL, 1000.0, {{100u, 1u}}),
-    // No extractData() gate — second NEW_RUN arrives without prior extract.
-    Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 2,
-                                0x0000000200000000ULL), // normal → m_pendingTransition=BeginRun
+    Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 11,
+                                0x0000000200000000ULL), // throws at :706-725
     Testing::PktDisconnect{},
 });
 m_server->start();
@@ -230,25 +298,29 @@ m_server->start();
 
 1. `TS_ASSERT(connectListener());`
 1. `waitFor([&]{ return m_server->scriptIndex() >= 5; }, std::chrono::seconds{5});`
-   (All packets including second NEW_RUN sent.)
-1. 100 ms sleep to allow bg thread to parse the packets.
-1. Extract with 15 s timeout + try/catch: the 15 s window lets the
-   internal 10 s NotYet poll fire first and propagate via `fut.get()`
-   without triggering `TS_FAIL`.
+1. 200 ms sleep to allow bg thread to process NEW_RUN(11) and store the exception.
 
 **Assertions:**
 
 ```cpp
-bool gotError = false;
-try {
-    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{15});
-    gotError = (ws == nullptr) || (m_listener->listenerState() ==
-                                   API::ListenerState::Error);
-} catch (const std::exception &) { gotError = true; }
-TSM_ASSERT("double-NEW_RUN without intervening extract must surface an error "
-           "(onBeginRun clears geometry state; NotYet after 10 s poll)",
-           gotError);
+TS_ASSERT_THROWS(extractWithTimeout(*m_listener, std::chrono::seconds{5}),
+                 const std::runtime_error &);
+// Second call must also re-throw promptly (not block on m_pauseNetRead).
+TS_ASSERT_THROWS(extractWithTimeout(*m_listener, std::chrono::seconds{2}),
+                 const std::runtime_error &);
 ```
+
+### 5.1b `test_repeatedNewRun_sameRunNumber_surfacesRuntimeError` *(new)*
+
+**Purpose:** Same scenario as §5.1 but with the same run number
+repeated — the operational case of an operator restarting the same run
+without an intervening END_RUN. Verifies the detection is independent
+of whether the run numbers match.
+
+**Script:** identical to §5.1 but with run number 10 repeated for both
+NEW_RUN packets.
+
+**Assertions:** `TS_ASSERT_THROWS(... const std::runtime_error &)` (single check).
 
 ### 5.2 `test_newRunEndRun_backPressureProducesReadWaitThenCleanEndRun`
 
@@ -425,17 +497,21 @@ ______________________________________________________________________
 
 ## 7. TODO
 
+- [x] `Framework/LiveData/src/SNSLiveEventDataListener.cpp` —
+  `:706-725` silent warning promoted to `std::runtime_error` (detects
+  consecutive NEW_RUN without END_RUN at packet-parse time).
 - [x] `Framework/LiveData/test/SNSLiveEventDataListenerTest.h` —
-  6 test methods appended after subspec04, in this order:
-  1\. `test_lastTransition_preservedAcrossNotYet` (§4.1)
-  2\. `test_doubleBeginRun_surfacesError_viaBackPressureCascade` (§5.1)
-  3\. `test_newRunEndRun_backPressureProducesReadWaitThenCleanEndRun` (§5.2)
-  4\. `test_pauseResume_orthogonalToRunState` (§6.1)
-  5\. `test_pausedEvents_droppedByDefault` (§6.2)
-  6\. `test_pausedEvents_keptWhenConfigured` (§6.3)
+  8 test methods appended after subspec04, in this order:
+  1\. `test_lastTransition_preservedAcrossNotYet` (§4.1, rewritten with STATE(0) handshake)
+  2\. `test_notYet_whenGeometryDelayed` (§4.2, new)
+  3\. `test_consecutiveNewRun_surfacesRuntimeError` (§5.1, renamed from doubleBeginRun)
+  4\. `test_repeatedNewRun_sameRunNumber_surfacesRuntimeError` (§5.1b, new)
+  5\. `test_newRunEndRun_backPressureProducesReadWaitThenCleanEndRun` (§5.2, unchanged)
+  6\. `test_pauseResume_orthogonalToRunState` (§6.1)
+  7\. `test_pausedEvents_droppedByDefault` (§6.2)
+  8\. `test_pausedEvents_keptWhenConfigured` (§6.3, known failure — deferred)
 - [x] `Framework/LiveData/test/SNSLiveEventDataListenerNoNetworkTest.h` —
-  two new unit tests added to exercise the production single-slot throws
-  directly via `callBufferParse()`:
+  two unit tests exercise the production single-slot throws via `callBufferParse()`:
   - `test_rxRunStatusPkt_newRun_throws_when_slot_occupied`
   - `test_rxRunStatusPkt_endRun_throws_when_slot_occupied`
 - [ ] Confirm every test uses `connectListener()`, `waitFor()`, and
@@ -443,14 +519,15 @@ ______________________________________________________________________
 - [ ] Confirm `test_pausedEvents_keptWhenConfigured` sets the config
   key **before** `connectListener()` (so it is in effect when the
   listener constructs).
-- [ ] Confirm no production code changes outside
-  `Framework/LiveData/test/`.
+- [x] Production code change required at `:706-725` (see §0.6 note).
 
 ______________________________________________________________________
 
 ## 8. Definition of done for this commit
 
-1. `SNSLiveEventDataListenerTest.h` contains the 6 `test_*` methods
+1. `SNSLiveEventDataListener.cpp` `:706-725` — `haveRunNumber` branch
+   throws `std::runtime_error` instead of logging a warning.
+1. `SNSLiveEventDataListenerTest.h` contains the 8 `test_*` methods
    listed in §7 with the names as given there.
 1. `SNSLiveEventDataListenerNoNetworkTest.h` contains
    `test_rxRunStatusPkt_newRun_throws_when_slot_occupied` and
@@ -460,4 +537,3 @@ ______________________________________________________________________
 1. The fixture's `setUp` / `tearDown` from `subspec03` (which
    save/restore `SNSLiveEventDataListener.keepPausedEvents`) are
    unchanged.
-1. No production code changes.
