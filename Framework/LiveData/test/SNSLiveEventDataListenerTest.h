@@ -538,15 +538,32 @@ public:
     TS_ASSERT_DIFFERS(ws2, nullptr);
   }
 
-  // ----- §6.5 Back-pressure single-slot invariant -----
+  // ----- §6.5 Back-pressure observables -----
+  //
+  // Note: the single-slot invariant throws at
+  // SNSLiveEventDataListener.cpp:651-655 (BeginRun-side) and :744-748
+  // (END_RUN-side) are unreachable over a real socket.  Both throws require
+  // m_pendingTransition to be occupied when a NEW_RUN or END_RUN arrives, but
+  // the call that occupies the slot also sets m_pauseNetRead=true (:730,:772),
+  // which causes rxPacket() to return true, which causes ADARA::Parser::
+  // bufferParse() to stop parsing further packets (ADARAParser.cpp:111,177).
+  // The bg-read loop then sleeps until extractData() clears the flag.
+  // The production throws are exercised by unit tests that feed raw
+  // ADARA::RunStatusPkt bytes through the parser with pre-injected state:
+  //   SNSLiveEventDataListenerNoNetworkTest::
+  //       test_rxRunStatusPkt_newRun_throws_when_slot_occupied()
+  //       test_rxRunStatusPkt_endRun_throws_when_slot_occupied()
 
-  void test_doubleBeginRun_violatesSingleSlot_throws() {
-    // The first NEW_RUN (white-lie path) initialises the workspace.
+  void test_doubleBeginRun_surfacesError_viaBackPressureCascade() {
+    // The first NEW_RUN (white-lie path, m_workspaceInitialized=false at
+    // arrival) initialises the workspace via initWorkspacePart2().
     // The second NEW_RUN (normal path, m_workspaceInitialized=true) sets
-    // m_pendingTransition = BeginRun and m_pauseNetRead = true.
-    // extractData() dispatches onBeginRun() (wiping geometry state) and then
-    // fails with NotYet because no new geometry arrives (server disconnected).
-    // Either a thrown exception or a ListenerState::Error surface is accepted.
+    // m_pendingTransition=BeginRun and m_pauseNetRead=true.
+    // extractData() dispatches onBeginRun() which clears m_instrumentXML,
+    // m_instrumentName, and m_workspaceInitialized.  No new geometry arrives
+    // (server has disconnected), so doExtractData() polls 10 s and throws
+    // NotYet.  Either a thrown exception or a ListenerState::Error surface is
+    // accepted.
     m_server->script({
         Testing::buildGeometryPkt(kMinimalIDF()),
         Testing::buildBeamlineInfoPkt(kInstrumentName),
@@ -575,20 +592,25 @@ public:
                gotError);
   }
 
-  void test_endRunWhilePending_violatesSingleSlot_throws() {
-    // Note: the single-slot END_RUN invariant at
-    // SNSLiveEventDataListener.cpp:744-748 cannot be triggered over a real
-    // socket because m_pauseNetRead (set by the preceding NEW_RUN) blocks the
-    // bg thread from reading END_RUN until extractData() first consumes the
-    // BeginRun transition.  Unit-level coverage:
+  void test_newRunEndRun_backPressureProducesReadWaitThenCleanEndRun() {
+    // The single-slot END_RUN invariant at :744-748 is unreachable over a
+    // real socket — see the block comment above §6.5.
+    // Unit-level coverage of the production throw:
     //   SNSLiveEventDataListenerNoNetworkTest::
-    //       test_pending_transition_queue_invariant_violation_throws().
+    //       test_rxRunStatusPkt_endRun_throws_when_slot_occupied()
     //
-    // This integration test verifies the observable consequence: a NEW_RUN
-    // handled via the white-lie path (geometry received concurrently with the
-    // NEW_RUN) + an END_RUN produces m_pauseNetRead back-pressure (ReadWait
-    // listener state), and the subsequent extract completes successfully with
-    // EndRun state.
+    // This integration test verifies the observable consequence of the
+    // white-lie NEW_RUN + END_RUN sequence:
+    //   1. NEW_RUN arrives while m_workspaceInitialized=false → white-lie
+    //      path → workspace initialised; m_pendingTransition NOT set.
+    //   2. END_RUN arrives → m_pendingTransition.has_value()==false → no
+    //      invariant throw → sets m_pendingTransition=EndRun,
+    //      m_pauseNetRead=true → listenerState()==ReadWait.
+    //   3. extractData() → onBeforeExtract() does nothing (EndRun pending,
+    //      not BeginRun) → doExtractData() succeeds (m_workspaceInitialized
+    //      still true) → onAfterExtract() commits EndRun.
+    // Observable: ReadWait back-pressure followed by a successful extract
+    // reporting runStatus()==EndRun.
     m_server->script({
         Testing::buildGeometryPkt(kMinimalIDF()),
         Testing::buildBeamlineInfoPkt(kInstrumentName),

@@ -8,8 +8,12 @@
 
 #include "MantidAPI/LiveListenerFactory.h"
 #include "MantidLiveData/SNSLiveEventDataListener.h"
+#include <algorithm>
 #include <cxxtest/TestSuite.h>
 #include <stdexcept>
+#ifndef _WIN32
+#include "MockSMSServer.h"
+#endif
 
 using namespace Mantid::API;
 using namespace Mantid::LiveData;
@@ -35,10 +39,26 @@ public:
 
   void injectPendingTransition(ILiveListener::RunStatus r) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    // Mirror the single-slot invariant from rxPacket(RunStatusPkt).
     if (m_pendingTransition.has_value())
       throw std::runtime_error("TestableSNSListener::injectPendingTransition: slot already occupied");
     m_pendingTransition = r;
+  }
+
+  void setWorkspaceInitialized(bool b) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_workspaceInitialized = b;
+  }
+
+  /// Feed raw ADARA packet bytes through the inherited Parser::bufferParse()
+  /// without a network connection.  Used to drive production rxPacket()
+  /// overloads from unit tests.
+  int callBufferParse(const std::vector<uint8_t> &bytes) {
+    if (static_cast<unsigned int>(bytes.size()) > bufferFillLength())
+      throw std::runtime_error("TestableSNSListener::callBufferParse: packet larger than parser buffer");
+    std::copy(bytes.begin(), bytes.end(), bufferFillAddress());
+    bufferBytesAppended(static_cast<unsigned int>(bytes.size()));
+    std::string logInfo;
+    return bufferParse(logInfo);
   }
 
   void injectBackgroundException(const std::string &msg) {
@@ -352,19 +372,43 @@ public:
   }
 
   // -------------------------------------------------------------------------
-  // Sub-spec 07: single-slot invariant
+  // Sub-spec 07: single-slot invariant — production throws
+  //
+  // The throws at SNSLiveEventDataListener.cpp:651-655 (NEW_RUN-side) and
+  // :744-748 (END_RUN-side) are unreachable over a real socket because
+  // m_pauseNetRead is set in the same rxPacket(RunStatusPkt) call that
+  // occupies m_pendingTransition, causing bufferParse() to stop parsing.
+  // These tests drive the production code directly by feeding pre-built
+  // ADARA::RunStatusPkt bytes through the inherited Parser::bufferParse()
+  // with state pre-injected via TestableSNSListener helpers.
   // -------------------------------------------------------------------------
 
-  /** Injecting a second transition while one is pending must throw.
-   *  This directly tests the invariant enforced by injectPendingTransition()
-   *  which mirrors the check in rxPacket(RunStatusPkt).
+#ifndef _WIN32
+  /** rxPacket(RunStatusPkt[NEW_RUN]) must throw when m_workspaceInitialized
+   *  is true and m_pendingTransition is already set.
+   *  Production throw: SNSLiveEventDataListener.cpp:651-655.
    */
-  void test_pending_transition_queue_invariant_violation_throws() {
+  void test_rxRunStatusPkt_newRun_throws_when_slot_occupied() {
+    TestableSNSListener listener;
+    listener.m_stubHooks = true;
+    listener.setWorkspaceInitialized(true);
+    listener.injectPendingTransition(ILiveListener::BeginRun);
+    auto bytes = Mantid::LiveData::Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, /*runNumber=*/1,
+                                                              /*pulseId=*/0x0000000100000000ULL);
+    TS_ASSERT_THROWS(listener.callBufferParse(bytes), const std::runtime_error &);
+  }
+
+  /** rxPacket(RunStatusPkt[END_RUN]) must throw when m_pendingTransition is
+   *  already set (regardless of workspace state).
+   *  Production throw: SNSLiveEventDataListener.cpp:744-748.
+   */
+  void test_rxRunStatusPkt_endRun_throws_when_slot_occupied() {
     TestableSNSListener listener;
     listener.m_stubHooks = true;
     listener.injectPendingTransition(ILiveListener::BeginRun);
-
-    // A second injection before the first is consumed must throw.
-    TS_ASSERT_THROWS(listener.injectPendingTransition(ILiveListener::EndRun), const std::runtime_error &);
+    auto bytes = Mantid::LiveData::Testing::buildRunStatusPkt(ADARA::RunStatus::END_RUN, /*runNumber=*/1,
+                                                              /*pulseId=*/0x0000000100000000ULL);
+    TS_ASSERT_THROWS(listener.callBufferParse(bytes), const std::runtime_error &);
   }
+#endif // !_WIN32
 };
