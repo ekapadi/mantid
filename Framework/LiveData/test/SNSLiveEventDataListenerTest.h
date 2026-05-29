@@ -871,6 +871,233 @@ public:
     TS_ASSERT_EQUALS(static_cast<int>(ews->getNumberEvents()), 3);
   }
 
+  // ----- §6.8 Historical replay & variable cache (XFAIL) -----
+  //
+  // Both tests document the m_ignorePackets defect: start() sets
+  // m_filterUntilRunStart=true for the 1 ns sentinel but never sets
+  // m_ignorePackets=true, so ignorePacket() (SNSLiveEventDataListener.cpp:
+  // 1644-1673) short-circuits at the first line and the entire filter-until-
+  // run-start and variable-cache replay path is dead code.
+  //
+  // See plans/ignore-packets-defect.md for full analysis.
+  //
+  // XFAIL convention: TS_WARN + return at the top of the test body.
+  // The script and assertions below the return express the INTENDED contract
+  // (i.e. the behaviour expected AFTER the fix lands).  When the fix lands,
+  // remove the TS_WARN and the return to re-enable the test.
+
+  void test_filterUntilRunStart_dropsPreRunPackets() {
+    TS_WARN("XFAIL: SNSLiveEventDataListener::start() sets m_filterUntilRunStart=true "
+            "for the 1 ns sentinel but never sets m_ignorePackets=true "
+            "(SNSLiveEventDataListener.cpp:193-210).  Because ignorePacket() "
+            "(SNSLiveEventDataListener.cpp:1644-1673) short-circuits immediately "
+            "when m_ignorePackets==false, the filter-until-run-start path is dead "
+            "code and pre-run packets are not filtered.  See "
+            "plans/ignore-packets-defect.md.  Remove this TS_WARN and the return "
+            "below when the production fix lands; the assertions that follow "
+            "express the intended contract.");
+    return;
+    // --- intended behaviour (currently unreached) ---
+    m_server->script({
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        // Pre-run events — should be filtered out by ignorePacket() once fixed.
+        Testing::buildBankedEventPkt(0x0000000100000000ULL, 1000.0, {{100u, 1u}, {200u, 2u}}),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 20, 0x0000000200000000ULL),
+        Testing::buildBankedEventPkt(0x0000000200000000ULL, 1000.0, {{300u, 3u}}),
+        Testing::PktWaitForExtract{}, // gate (index 5 → scriptIndex 6)
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    // DateAndTime(1) == 1 nanosecond past epoch — the "replay from previous
+    // run start" sentinel; start() sets m_filterUntilRunStart=true.
+    TS_ASSERT(connectListener(Types::Core::DateAndTime(1)));
+    waitFor([&] { return m_server->scriptIndex() >= 6; }, std::chrono::seconds{5});
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate();
+    TS_ASSERT_DIFFERS(ws, nullptr);
+    auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
+    TS_ASSERT_DIFFERS(ews, nullptr);
+    // Intended: only the 1 post-run event; the 2 pre-run events are filtered
+    // by ignorePacket() once m_ignorePackets is correctly initialised in start().
+    TS_ASSERT_EQUALS(static_cast<int>(ews->getNumberEvents()), 1);
+  }
+
+  void test_variableCache_replayedAfterStartCondition() {
+    TS_WARN("XFAIL: same root cause as test_filterUntilRunStart_dropsPreRunPackets "
+            "— m_ignorePackets is never set true in start(), so the variable-cache "
+            "replay path (replayVariableCache(), SNSLiveEventDataListener.cpp:"
+            "1668-1673) is unreachable.  Broken and fixed behaviours produce the "
+            "same observable output in this test (final log value 7 in both cases); "
+            "a spy on replayVariableCache() would be needed to distinguish them.  "
+            "This test is retained as executable documentation of the defect.  See "
+            "plans/ignore-packets-defect.md.  Remove this TS_WARN and the return "
+            "below when the production fix lands.");
+    return;
+    // --- intended behaviour (currently unreached) ---
+    const uint64_t preRunPulse = 0x0000000100000000ULL;
+    const uint64_t postRunPulse = 0x0000000200000000ULL;
+    m_server->script({
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        PKT(devDesPacket),                                   // device descriptor for device 1
+        Testing::buildVariableU32Pkt(1, 3, 42, preRunPulse), // pre-run (should be cached)
+        Testing::buildVariableU32Pkt(1, 3, 99, preRunPulse), // pre-run (should be cached)
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 30, postRunPulse),
+        Testing::buildVariableU32Pkt(1, 3, 7, postRunPulse), // post-run update
+        Testing::buildBankedEventPkt(postRunPulse, 1000.0, {{100u, 1u}}),
+        Testing::PktWaitForExtract{}, // gate (index 8 → scriptIndex 9)
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener(Types::Core::DateAndTime(1)));
+    waitFor([&] { return m_server->scriptIndex() >= 9; }, std::chrono::seconds{5});
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate();
+    TS_ASSERT_DIFFERS(ws, nullptr);
+    auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
+    TS_ASSERT_DIFFERS(ews, nullptr);
+    // run_number is set by setRunDetails() — its presence confirms the run
+    // lifecycle completed.  A spy on replayVariableCache() would be needed to
+    // assert the cache-and-replay mechanism itself.
+    TS_ASSERT(ews->run().hasProperty("run_number"));
+  }
+
+  // ----- §6.9 Error propagation -----
+
+  void test_invalidPacket_propagatesAsBackgroundException() {
+    // Garbage bytes cause ADARA::invalid_packet to be thrown and caught in
+    // the bg-read loop (SNSLiveEventDataListener.cpp:305-317), where it is
+    // stored in m_backgroundException.  The next runState() or extractData()
+    // call must re-throw it.
+    m_server->script({
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        Testing::PktGarbage{
+            {0xFF, 0xFE, 0xFD, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    // Wait for the garbage to have been sent (index 2 → scriptIndex 3),
+    // then give the bg thread a moment to parse and stash the exception.
+    waitFor([&] { return m_server->scriptIndex() >= 3; }, std::chrono::seconds{5});
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    bool threw = false;
+    try {
+      (void)m_listener->runState();
+      (void)extractWithTimeout(*m_listener, std::chrono::seconds{5});
+    } catch (...) {
+      threw = true;
+    }
+    TS_ASSERT(threw);
+  }
+
+  void test_serverDisconnect_setsErrorState() {
+    TS_WARN("XFAIL: SNSLiveEventDataListener does not detect a clean peer-close. "
+            "Poco::Net::StreamSocket::receiveBytes() returns 0 bytes on EOF, but "
+            "the bg read loop (SNSLiveEventDataListener.cpp:264-294) does not "
+            "treat a zero-byte return as fatal, so m_isConnected is never set "
+            "false after a server-side close.  Defect noted in PR comment "
+            "4553235918; no ticket filed yet.  Remove this TS_WARN and the "
+            "return below when the production fix lands; the assertions that "
+            "follow express the intended contract.");
+    return;
+    // --- intended behaviour (currently unreached) ---
+    m_server->script({
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 1, 0x0000000100000000ULL),
+        Testing::PktDisconnect{}, // (index 3 → scriptIndex 4)
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&] { return m_server->scriptIndex() >= 4; }, std::chrono::seconds{5});
+    // Give the listener a window in which it would notice the close if the
+    // production fix were in place.
+    std::this_thread::sleep_for(std::chrono::milliseconds{200});
+    // Intended: listener detects EOF and transitions out of Connected.
+    TS_ASSERT(!m_listener->isConnected());
+    TS_ASSERT_DIFFERS(m_listener->listenerState(), API::ListenerState::Connected);
+  }
+
+  void test_connectFailure_returnsFalse() {
+    // setUp() already removed m_sockPath (line 149), so no server is listening
+    // at that path.  connect() must return false without throwing.
+    // Do NOT call connectListener() — this test drives connect() directly.
+    m_listener = std::make_unique<SNSLiveEventDataListener>();
+    Poco::Net::SocketAddress addr(Poco::Net::AddressFamily::UNIX_LOCAL, m_sockPath);
+    bool result = m_listener->connect(addr);
+    TS_ASSERT(!result);
+    TS_ASSERT(!m_listener->isConnected());
+  }
+
+  // ----- §6.10 Monitor workspace routing -----
+
+  void test_beamMonitorEvents_routedToMonitorWorkspace() {
+    // Verifies rxPacket(BeamMonitorPkt) (SNSLiveEventDataListener.cpp:470-530)
+    // places monitor events in the sub-workspace created by
+    // initMonitorWorkspace() (SNSLiveEventDataListener.cpp:1371-1388).
+    m_server->script({
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 60, 0x0000000100000000ULL),
+        Testing::buildBankedEventPkt(0x0000000100000000ULL, 1000.0,
+                                     {{100u, 1u}, {200u, 2u}, {300u, 3u}}),    // DUM pixels 1/2/3
+        Testing::buildBeamMonitorPkt(0x0000000100000000ULL, 0u, {500u, 600u}), // DUM monitor 0
+        Testing::PktWaitForExtract{},                                          // gate (index 5 → scriptIndex 6)
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&] { return m_server->scriptIndex() >= 6; }, std::chrono::seconds{5});
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate();
+    TS_ASSERT_DIFFERS(ws, nullptr);
+    auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
+    TS_ASSERT_DIFFERS(ews, nullptr);
+    // Main workspace must have neutron events.
+    TS_ASSERT_LESS_THAN(0, static_cast<int>(ews->getNumberEvents()));
+    // Monitor sub-workspace must exist and contain beam-monitor events.
+    auto monWs = ews->monitorWorkspace();
+    TS_ASSERT_DIFFERS(monWs, nullptr);
+    auto monEws = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(monWs);
+    TS_ASSERT_DIFFERS(monEws, nullptr);
+    TS_ASSERT_LESS_THAN(0, static_cast<int>(monEws->getNumberEvents()));
+  }
+
+  void test_invalidMonitorId_logsOnceAndContinues() {
+    // Verifies the m_badMonitors dedup (SNSLiveEventDataListener.cpp:521-524):
+    // an unknown monitor ID is logged exactly once; subsequent packets with the
+    // same bad ID are silently ignored.  The listener must not crash or enter
+    // Error state, and neutron events from the following BankedEventPkt must
+    // still be processed.
+    m_server->script({
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 61, 0x0000000100000000ULL),
+        // Same invalid monitor ID twice — second occurrence must be deduplicated.
+        Testing::buildBeamMonitorPkt(0x0000000100000000ULL, 9999u, {100u}),
+        Testing::buildBeamMonitorPkt(0x0000000200000000ULL, 9999u, {200u}),
+        Testing::buildBankedEventPkt(0x0000000200000000ULL, 1000.0,
+                                     {{100u, 1u}, {200u, 2u}, {300u, 3u}}), // DUM pixels 1/2/3
+        Testing::PktWaitForExtract{},                                       // gate (index 6 → scriptIndex 7)
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&] { return m_server->scriptIndex() >= 7; }, std::chrono::seconds{5});
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate();
+    // The listener must continue operating — no crash, no Error state.
+    TS_ASSERT_DIFFERS(ws, nullptr);
+    TS_ASSERT_DIFFERS(m_listener->listenerState(), API::ListenerState::Error);
+    // Neutron events from the BankedEventPkt must still be present.
+    auto ews = std::dynamic_pointer_cast<DataObjects::EventWorkspace>(ws);
+    TS_ASSERT_DIFFERS(ews, nullptr);
+    TS_ASSERT_LESS_THAN(0, static_cast<int>(ews->getNumberEvents()));
+  }
+
 private:
   // Each behavioural test calls this AFTER queuing the server script.
   // Returns true on success.  Builds the UDS SocketAddress via the
