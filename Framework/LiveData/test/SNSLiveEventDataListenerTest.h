@@ -24,6 +24,7 @@
 #include "MantidDataObjects/EventWorkspace.h"
 #include "MantidGeometry/Instrument.h"
 #include "MantidKernel/ConfigService.h"
+#include "MantidLiveData/Exception.h"
 #include "MantidLiveData/SNSLiveEventDataListener.h"
 #include "MantidTypes/Core/DateAndTime.h"
 
@@ -38,6 +39,7 @@
 #include <fstream>
 #include <future>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -102,17 +104,48 @@ bool waitFor(Pred pred, std::chrono::milliseconds timeout = std::chrono::seconds
   return true;
 }
 
-/// Wraps listener.extractData() in std::async.  On timeout (default
-/// 10 s) calls TS_FAIL and returns nullptr.  Protects against mutex
-/// deadlocks in onBeforeExtract / onBeginRun / onEndRun.
+/// Wraps listener.extractData() in std::async, retrying on
+/// Exception::NotYet (the production-side "retry shortly" signal) until
+/// the deadline elapses.  On hard timeout (extractData hangs) or on
+/// NotYet persisting past the deadline, calls TS_FAIL and returns nullptr.
 inline std::shared_ptr<API::Workspace> extractWithTimeout(SNSLiveEventDataListener &listener,
                                                           std::chrono::seconds timeout = std::chrono::seconds{10}) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (true) {
+    auto fut = std::async(std::launch::async, [&] { return listener.extractData(); });
+    const auto remaining = deadline - std::chrono::steady_clock::now();
+    if (remaining <= std::chrono::milliseconds{0}) {
+      TS_FAIL("extractData() exhausted timeout retrying NotYet");
+      return nullptr;
+    }
+    if (fut.wait_for(remaining) == std::future_status::timeout) {
+      TS_FAIL("extractData() timed out — possible deadlock");
+      return nullptr;
+    }
+    try {
+      return fut.get();
+    } catch (const Exception::NotYet &) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+  }
+}
+
+/// One-shot extractData() for tests that intentionally provoke NotYet.
+/// Returns the NotYet message if NotYet was thrown; returns nullopt if
+/// extractData() succeeded without throwing.  Any other exception propagates.
+inline std::optional<std::string> extractExpectingNotYet(SNSLiveEventDataListener &listener,
+                                                         std::chrono::seconds timeout = std::chrono::seconds{5}) {
   auto fut = std::async(std::launch::async, [&] { return listener.extractData(); });
   if (fut.wait_for(timeout) == std::future_status::timeout) {
-    TS_FAIL("extractData() timed out — possible deadlock");
-    return nullptr;
+    TS_FAIL("extractExpectingNotYet: extractData() did not return — possible deadlock");
+    return std::nullopt;
   }
-  return fut.get();
+  try {
+    (void)fut.get();
+    return std::nullopt;
+  } catch (const Exception::NotYet &e) {
+    return std::string{e.what()};
+  }
 }
 
 } // namespace
@@ -520,14 +553,11 @@ public:
     waitFor([&] { return m_server->scriptIndex() >= 5; }, std::chrono::seconds{5});
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
 
-    // First extract: NotYet path — doExtractData() polls 10 s then throws.
-    // Use a 15 s timeout so the internal poll fires first and the resulting
-    // exception propagates via fut.get() rather than triggering TS_FAIL.
-    try {
-      extractWithTimeout(*m_listener, std::chrono::seconds{15});
-    } catch (const std::exception &) {
-      // NotYet — expected on this path.
-    }
+    // First extract: NotYet path — doExtractData() polls startupTimeout (0.1 s)
+    // then throws.  We don't assert on the result; the side effect is that
+    // onBeforeExtract() dispatched onBeginRun() and set m_lastTransition=BeginRun
+    // while doExtractData() subsequently threw NotYet (C1 path).
+    (void)extractExpectingNotYet(*m_listener, std::chrono::seconds{5});
 
     // C1 fix: m_lastTransition must still be BeginRun — onAfterExtract() was
     // NOT invoked when doExtractData() threw, so the reset at :1566 was bypassed.
@@ -568,15 +598,9 @@ public:
     waitFor([&] { return m_server->scriptIndex() >= 2; }, std::chrono::seconds{5});
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
 
-    // First extract: workspace not yet initialised → NotYet after 10 s poll.
-    // 15 s timeout lets the internal poll fire before the outer timeout fires.
-    bool gotNotYet = false;
-    try {
-      extractWithTimeout(*m_listener, std::chrono::seconds{15});
-    } catch (const std::exception &) {
-      gotNotYet = true;
-    }
-    TSM_ASSERT("first extract must throw NotYet when Geometry has not yet arrived", gotNotYet);
+    // First extract: workspace not yet initialised → NotYet (startupTimeout=0.1 s).
+    auto notYet = extractExpectingNotYet(*m_listener, std::chrono::seconds{5});
+    TSM_ASSERT("first extract must throw NotYet when Geometry has not yet arrived", notYet.has_value());
 
     // Listener must be in a sane state — no spurious back-pressure, no stored
     // background exception.
@@ -1119,15 +1143,10 @@ public:
     waitFor([&] { return m_server->scriptIndex() >= 1; }, std::chrono::seconds{5});
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
 
-    // First extract: bg thread still in receiveBytes → NotYet after ~500 ms.
-    // Use a 5 s outer timeout (longer than the 500 ms internal wait).
-    bool gotNotYet = false;
-    try {
-      extractWithTimeout(*m_listener, std::chrono::seconds{5});
-    } catch (const std::exception &) {
-      gotNotYet = true;
-    }
-    TSM_ASSERT("extractData() must throw NotYet when bg thread has not caught up", gotNotYet);
+    // First extract: bg thread still in receiveBytes, m_bgThreadCaughtUp=false
+    // → onBeforeExtract() throws NotYet immediately.
+    auto notYet = extractExpectingNotYet(*m_listener, std::chrono::seconds{5});
+    TSM_ASSERT("extractData() must throw NotYet when bg thread has not caught up", notYet.has_value());
 
     // Release gate1: server sends Geometry + Beamline + NEW_RUN.
     m_server->releaseExtractGate();
@@ -1240,16 +1259,11 @@ public:
     TS_ASSERT_EQUALS(m_listener->runStatus(), API::ILiveListener::EndRun);
 
     // Second extract: m_bgThreadCaughtUp is false (reset by onEndRun()).
-    // The bg thread is either still sleeping in the pause loop or has just
-    // entered receiveBytes() blocked at gate1 — either way the flag is false
-    // and onBeforeExtract() must throw NotYet immediately.
-    bool gotNotYet = false;
-    try {
-      extractWithTimeout(*m_listener, std::chrono::seconds{5});
-    } catch (const std::exception &) {
-      gotNotYet = true;
-    }
-    TSM_ASSERT("extractData() must throw NotYet after EndRun resets m_bgThreadCaughtUp", gotNotYet);
+    // The bg thread has entered receiveBytes() blocked at gate1 (confirmed
+    // above by waitFor ReadWait), so the flag stays false and onBeforeExtract()
+    // must throw NotYet immediately.
+    auto notYet2 = extractExpectingNotYet(*m_listener, std::chrono::seconds{5});
+    TSM_ASSERT("extractData() must throw NotYet after EndRun resets m_bgThreadCaughtUp", notYet2.has_value());
 
     // Release gate1: server sends run-2 init burst (Geometry + Beamline +
     // NEW_RUN(81)).  NEW_RUN(81) takes the JoiningRun path (m_workspaceInitialized
