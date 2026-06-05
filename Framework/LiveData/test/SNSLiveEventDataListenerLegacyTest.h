@@ -4,7 +4,8 @@
 //   NScD Oak Ridge National Laboratory, European Spallation Source,
 //   Institut Laue - Langevin & CSNS, Institute of High Energy Physics, CAS
 // SPDX - License - Identifier: GPL - 3.0 +
-// Legacy network-dependent test, retained for reference only; superseded by `SNSLiveEventDataListenerTest.h` (integration) and `SNSLiveEventDataListenerNoNetworkTest.h` (unit).
+// Legacy network-dependent test, retained for reference only; superseded by `SNSLiveEventDataListenerTest.h`
+// (integration) and `SNSLiveEventDataListenerNoNetworkTest.h` (unit).
 #pragma once
 
 /* This code is largely based on Russell Taylor's test for the

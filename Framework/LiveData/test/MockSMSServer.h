@@ -27,10 +27,9 @@ struct PktWaitForExtract {}; // gate: blocks until the test signals
                              // (used to deterministically interleave
                              //  extractData() with packet delivery).
 
-using ScriptEntry = std::variant<
-    std::vector<uint8_t>, // raw packet bytes (preferred — built by
-                          // the helpers in §5 of subspec02)
-    PktGarbage, PktDisconnect, PktWaitForExtract>;
+using ScriptEntry = std::variant<std::vector<uint8_t>, // raw packet bytes (preferred — built by
+                                                       // the helpers in §5 of subspec02)
+                                 PktGarbage, PktDisconnect, PktWaitForExtract>;
 
 class MockSMSServer {
 public:
@@ -102,11 +101,9 @@ struct PixelTof {
   uint32_t pixel;
 };
 
-std::vector<uint8_t> buildBankedEventPkt(uint64_t pulseId, double pulseChargePc,
-                                         std::vector<PixelTof> const &events);
+std::vector<uint8_t> buildBankedEventPkt(uint64_t pulseId, double pulseChargePc, std::vector<PixelTof> const &events);
 
-std::vector<uint8_t> buildBeamMonitorPkt(uint64_t pulseId, uint32_t monitorId,
-                                         std::vector<uint32_t> const &tofs);
+std::vector<uint8_t> buildBeamMonitorPkt(uint64_t pulseId, uint32_t monitorId, std::vector<uint32_t> const &tofs);
 
 std::vector<uint8_t> buildRunInfoPkt(const std::string &proposalId, const std::string &title);
 
