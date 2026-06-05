@@ -4,33 +4,25 @@ if(WIN32)
   return()
 endif()
 
-# The packet_playback module is in `Framework/PythonInterface/mantid/LiveData/ADARA/utils/packet_playback`. We need to
-# add that directory to PYTHONPATH for the tests to find it.
-set(LIVEDATA_SOURCE_DIR ${CMAKE_SOURCE_DIR}/Framework/PythonInterface/mantid/LiveData)
-
-set(_test_runner ${CMAKE_SOURCE_DIR}/Framework/PythonInterface/test/testhelpers/testrunner.py)
-set(_module_dir ${CMAKE_BINARY_DIR}/bin)
-set(_python_path
-    "${CMAKE_CURRENT_SOURCE_DIR}:${LIVEDATA_SOURCE_DIR}/ADARA/utils/packet_playback:$ENV{PYTHONPATH}:${_module_dir}"
+set(TEST_PY_FILES
+    test_adara_player.py
+    test_adara_player_config.py
+    test_adara_player_limits.py
+    test_adara_player_packet.py
+    test_adara_player_play.py
+    test_adara_player_record.py
+    test_adara_player_server.py
+    test_adara_player_summarize.py
+    test_adara_player_util.py
 )
 
-add_test(NAME LiveDataTest_AdaraUtilsTest
-         COMMAND ${CMAKE_COMMAND} -E chdir "${CMAKE_BINARY_DIR}/bin/Testing" ${Python_EXECUTABLE} ${_test_runner}
-                 ${CMAKE_CURRENT_SOURCE_DIR}/test_adara_utils_suite.py
+check_tests_valid(${CMAKE_CURRENT_SOURCE_DIR} ${TEST_PY_FILES})
+
+# Add the packet_playback source module to PYTHONPATH so tests can import player_config, packet_player, etc.
+set(PYUNITTEST_PYTHONPATH_EXTRA
+    ${CMAKE_SOURCE_DIR}/Framework/PythonInterface/mantid/LiveData/ADARA/utils/packet_playback
 )
 
-set(_test_env
-    "PYTHONPATH=${_python_path}"
-    "adara_player_conf=${LIVEDATA_SOURCE_DIR}/ADARA/utils/packet_playback/adara_player_conf.yml" "ADARA_PLAYER_LOGS=."
-)
-if(NOT WITH_ASAN)
-  set(_ld_preload "${TBBMALLOC_RUNTIME_LIB}")
-  if(LD_PRELOAD)
-    set(_ld_preload "${_ld_preload}:$ENV{LD_PRELOAD}")
-  endif()
-  list(APPEND _test_env "LD_PRELOAD=${_ld_preload}")
-endif()
-
-set_tests_properties(
-  LiveDataTest_AdaraUtilsTest PROPERTIES ENVIRONMENT "${_test_env}" TIMEOUT ${TESTING_TIMEOUT} LABELS UnitTest
-)
+# Prefix for test=PythonLiveDataADARAdara
+pyunittest_add_test(${CMAKE_CURRENT_SOURCE_DIR} python.livedata.adara.packet_playback ${TEST_PY_FILES})
+unset(PYUNITTEST_PYTHONPATH_EXTRA)

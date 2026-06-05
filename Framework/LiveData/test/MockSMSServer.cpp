@@ -18,12 +18,14 @@
 #include <sys/socket.h>
 #include <unistd.h> // ::unlink
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <iomanip>
+#include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -277,7 +279,7 @@ void MockSMSServer::start() {
 }
 
 void MockSMSServer::script(std::initializer_list<ScriptEntry> entries) {
-  for (auto &e : entries)
+  for (const auto &e : entries)
     m_impl->m_script.push_back(e);
 }
 
@@ -666,8 +668,7 @@ std::vector<uint8_t> buildRunInfoPkt(const std::string &proposalId, const std::s
   appendU32LE(pkt, static_cast<uint32_t>(xmlLen));
 
   // XML bytes
-  for (char c : xml)
-    pkt.push_back(static_cast<uint8_t>(c));
+  std::transform(xml.begin(), xml.end(), std::back_inserter(pkt), [](char c) { return static_cast<uint8_t>(c); });
 
   // Padding to 4-byte boundary
   while (pkt.size() < totalLen)
@@ -702,8 +703,7 @@ std::vector<uint8_t> buildGeometryPkt(const std::string &xml) {
 
   appendU32LE(pkt, static_cast<uint32_t>(xmlLen));
 
-  for (char c : xml)
-    pkt.push_back(static_cast<uint8_t>(c));
+  std::transform(xml.begin(), xml.end(), std::back_inserter(pkt), [](char c) { return static_cast<uint8_t>(c); });
 
   while (pkt.size() < totalLen)
     pkt.push_back(0u);
@@ -744,8 +744,8 @@ std::vector<uint8_t> buildBeamlineInfoPkt(const std::string &longName) {
   uint32_t sizes = static_cast<uint32_t>(longNameLen);
   appendU32LE(pkt, sizes);
 
-  for (char c : longName)
-    pkt.push_back(static_cast<uint8_t>(c));
+  std::transform(longName.begin(), longName.end(), std::back_inserter(pkt),
+                 [](char c) { return static_cast<uint8_t>(c); });
 
   // Padding
   while (pkt.size() < totalLen)
@@ -790,8 +790,8 @@ std::vector<uint8_t> buildDeviceDescriptorPkt(uint32_t devId, const std::string 
   appendU32LE(pkt, static_cast<uint32_t>(xmlLen));
 
   // XML bytes
-  for (char c : xmlDescriptor)
-    pkt.push_back(static_cast<uint8_t>(c));
+  std::transform(xmlDescriptor.begin(), xmlDescriptor.end(), std::back_inserter(pkt),
+                 [](char c) { return static_cast<uint8_t>(c); });
 
   // Padding to 4-byte boundary
   while (pkt.size() < totalLen)
