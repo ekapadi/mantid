@@ -42,6 +42,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 
 using namespace Mantid;
@@ -108,8 +109,13 @@ bool waitFor(Pred pred, std::chrono::milliseconds timeout = std::chrono::seconds
 /// Exception::NotYet (the production-side "retry shortly" signal) until
 /// the deadline elapses.  On hard timeout (extractData hangs) or on
 /// NotYet persisting past the deadline, calls TS_FAIL and returns nullptr.
+///
+/// Catches by std::exception rather than Exception::NotYet — see
+/// Exception::NotYet's constructor docstring for the macOS/libc++ RTTI
+/// rationale.  NotYet is identified by the "NotYet: " prefix in what().
 inline std::shared_ptr<API::Workspace> extractWithTimeout(SNSLiveEventDataListener &listener,
                                                           std::chrono::seconds timeout = std::chrono::seconds{10}) {
+  static constexpr std::string_view kNotYetPrefix = "NotYet: ";
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (true) {
     auto fut = std::async(std::launch::async, [&] { return listener.extractData(); });
@@ -124,17 +130,27 @@ inline std::shared_ptr<API::Workspace> extractWithTimeout(SNSLiveEventDataListen
     }
     try {
       return fut.get();
-    } catch (const Exception::NotYet &) {
+    } catch (const std::exception &e) {
+      if (std::string_view{e.what()}.substr(0, kNotYetPrefix.size()) != kNotYetPrefix) {
+        throw; // not a NotYet — propagate so the test fails loudly
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds{20});
     }
   }
 }
 
 /// One-shot extractData() for tests that intentionally provoke NotYet.
-/// Returns the NotYet message if NotYet was thrown; returns nullopt if
-/// extractData() succeeded without throwing.  Any other exception propagates.
+/// Returns the NotYet message (stripped of the "NotYet: " prefix) when
+/// extractData() throws NotYet; returns nullopt if it succeeds.  Any
+/// non-NotYet exception is rethrown so the test fails loudly.  On hard
+/// timeout (extractData() doesn't return at all) calls TS_FAIL.
+///
+/// Catches by std::exception rather than Exception::NotYet — see
+/// Exception::NotYet's constructor docstring for the macOS/libc++ RTTI
+/// rationale.  NotYet is identified by the "NotYet: " prefix in what().
 inline std::optional<std::string> extractExpectingNotYet(SNSLiveEventDataListener &listener,
                                                          std::chrono::seconds timeout = std::chrono::seconds{5}) {
+  static constexpr std::string_view kNotYetPrefix = "NotYet: ";
   auto fut = std::async(std::launch::async, [&] { return listener.extractData(); });
   if (fut.wait_for(timeout) == std::future_status::timeout) {
     TS_FAIL("extractExpectingNotYet: extractData() did not return — possible deadlock");
@@ -143,8 +159,12 @@ inline std::optional<std::string> extractExpectingNotYet(SNSLiveEventDataListene
   try {
     (void)fut.get();
     return std::nullopt;
-  } catch (const Exception::NotYet &e) {
-    return std::string{e.what()};
+  } catch (const std::exception &e) {
+    const std::string_view what{e.what()};
+    if (what.substr(0, kNotYetPrefix.size()) == kNotYetPrefix) {
+      return std::string{what.substr(kNotYetPrefix.size())};
+    }
+    throw; // some other exception type — propagate so the test fails loudly
   }
 }
 
@@ -557,7 +577,7 @@ public:
     // then throws.  We don't assert on the result; the side effect is that
     // onBeforeExtract() dispatched onBeginRun() and set m_lastTransition=BeginRun
     // while doExtractData() subsequently threw NotYet (C1 path).
-    (void)extractExpectingNotYet(*m_listener, std::chrono::seconds{5});
+    (void)extractExpectingNotYet(*m_listener);
 
     // C1 fix: m_lastTransition must still be BeginRun — onAfterExtract() was
     // NOT invoked when doExtractData() threw, so the reset at :1566 was bypassed.
@@ -599,7 +619,7 @@ public:
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
 
     // First extract: workspace not yet initialised → NotYet (startupTimeout=0.1 s).
-    auto notYet = extractExpectingNotYet(*m_listener, std::chrono::seconds{5});
+    auto notYet = extractExpectingNotYet(*m_listener);
     TSM_ASSERT("first extract must throw NotYet when Geometry has not yet arrived", notYet.has_value());
 
     // Listener must be in a sane state — no spurious back-pressure, no stored
@@ -1145,7 +1165,7 @@ public:
 
     // First extract: bg thread still in receiveBytes, m_bgThreadCaughtUp=false
     // → onBeforeExtract() throws NotYet immediately.
-    auto notYet = extractExpectingNotYet(*m_listener, std::chrono::seconds{5});
+    auto notYet = extractExpectingNotYet(*m_listener);
     TSM_ASSERT("extractData() must throw NotYet when bg thread has not caught up", notYet.has_value());
 
     // Release gate1: server sends Geometry + Beamline + NEW_RUN.
@@ -1262,7 +1282,7 @@ public:
     // The bg thread has entered receiveBytes() blocked at gate1 (confirmed
     // above by waitFor ReadWait), so the flag stays false and onBeforeExtract()
     // must throw NotYet immediately.
-    auto notYet2 = extractExpectingNotYet(*m_listener, std::chrono::seconds{5});
+    auto notYet2 = extractExpectingNotYet(*m_listener);
     TSM_ASSERT("extractData() must throw NotYet after EndRun resets m_bgThreadCaughtUp", notYet2.has_value());
 
     // Release gate1: server sends run-2 init burst (Geometry + Beamline +
