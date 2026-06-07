@@ -178,29 +178,57 @@ public:
     ConfigService::Instance().setString("fakeeventdatalistener.endrunevery", "0");
   }
 
-  /** The count of EndRun events over a fixed wall-clock window must be
-   *  consistent with the configured period — i.e. the cadence has not
-   *  changed compared to the legacy runStatus()-based implementation.
+  /** With a sub-microsecond period every extractData() call must cross
+   *  the deadline, so lastTransition() must be EndRun on every extract
+   *  and runNumber must advance once per extract.
+   *
+   *  This is a deterministic replacement for the deleted wall-clock
+   *  cadence test: instead of counting events in a fixed time window
+   *  (fragile on slow/loaded CI), we drive endrunevery to an extreme
+   *  where the outcome of the deadline comparison is knowable
+   *  independently of scheduler timing.
    */
-  void test_periodic_EndRun_cadence_matches_legacy() {
+  void test_endRun_fires_every_extract_when_period_is_tiny() {
     using Mantid::Kernel::ConfigService;
-    // 50 ms period; run for ~350 ms → expect 5–8 EndRuns.
-    ConfigService::Instance().setString("fakeeventdatalistener.endrunevery", "0.05");
-    auto endRunListener = LiveListenerFactory::Instance().create("FakeEventDataListener", true);
-    endRunListener->start(0);
+    ConfigService::Instance().setString("fakeeventdatalistener.endrunevery", "0.000001"); // 1 µs
+    auto listener = LiveListenerFactory::Instance().create("FakeEventDataListener", true);
+    listener->start(0);
+    Poco::Thread::sleep(1); // guarantee the 1 µs initial deadline has elapsed
 
-    int endRunCount = 0;
-    const int durationMs = 350;
-    const int pollIntervalMs = 5;
-    for (int elapsed = 0; elapsed < durationMs; elapsed += pollIntervalMs) {
-      Poco::Thread::sleep(pollIntervalMs);
-      endRunListener->extractData();
-      if (endRunListener->runState() == ILiveListener::EndRun)
-        ++endRunCount;
+    const int runNumberBefore = listener->runNumber();
+    constexpr int kExtracts = 5;
+    int edgeCount = 0;
+    for (int i = 0; i < kExtracts; ++i) {
+      listener->extractData();
+      if (listener->lastTransition().has_value()) {
+        TS_ASSERT_EQUALS(listener->lastTransition().value(), ILiveListener::EndRun);
+        ++edgeCount;
+      }
     }
-    // Allow generous bounds for slow CI machines.
-    TS_ASSERT_LESS_THAN(0, endRunCount);
-    TS_ASSERT_LESS_THAN(endRunCount, 20);
+    TS_ASSERT_EQUALS(edgeCount, kExtracts);
+    TS_ASSERT_EQUALS(listener->runNumber(), runNumberBefore + kExtracts);
+
+    ConfigService::Instance().setString("fakeeventdatalistener.endrunevery", "0");
+  }
+
+  /** With a 1000-second period no extractData() call can cross the
+   *  deadline during a unit test, so lastTransition() must always be
+   *  empty and runNumber must not change.
+   */
+  void test_endRun_never_fires_when_period_is_huge() {
+    using Mantid::Kernel::ConfigService;
+    ConfigService::Instance().setString("fakeeventdatalistener.endrunevery", "1000"); // 1000 s
+    auto listener = LiveListenerFactory::Instance().create("FakeEventDataListener", true);
+    listener->start(0);
+
+    const int runNumberBefore = listener->runNumber();
+    constexpr int kExtracts = 5;
+    for (int i = 0; i < kExtracts; ++i) {
+      listener->extractData();
+      TS_ASSERT(!listener->lastTransition().has_value());
+      TS_ASSERT_EQUALS(listener->runState(), ILiveListener::Running);
+    }
+    TS_ASSERT_EQUALS(listener->runNumber(), runNumberBefore);
 
     ConfigService::Instance().setString("fakeeventdatalistener.endrunevery", "0");
   }
