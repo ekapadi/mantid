@@ -6,14 +6,12 @@
 // SPDX-License-Identifier: GPL-3.0+
 #pragma once
 
+#include "ADARAPacketBuilders.h"
 #include "MantidAPI/LiveListenerFactory.h"
 #include "MantidLiveData/SNSLiveEventDataListener.h"
 #include <algorithm>
 #include <cxxtest/TestSuite.h>
 #include <stdexcept>
-#ifndef _WIN32
-#include "MockSMSServer.h"
-#endif
 
 using namespace Mantid::API;
 using namespace Mantid::LiveData;
@@ -415,7 +413,6 @@ public:
   // with state pre-injected via TestableSNSListener helpers.
   // -------------------------------------------------------------------------
 
-#ifndef _WIN32
   /** rxPacket(RunStatusPkt[NEW_RUN]) must throw on the transition path when
    *  m_workspaceInitialized is true and m_pendingTransition is already set.
    */
@@ -499,6 +496,4 @@ public:
     TS_ASSERT_EQUALS("<instrument/>", listener.readInstrumentXML());
     TS_ASSERT_EQUALS("TEST_INST", listener.readInstrumentName());
   }
-
-#endif // !_WIN32
 };
