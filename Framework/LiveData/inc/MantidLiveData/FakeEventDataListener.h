@@ -42,7 +42,7 @@ public:
   int runNumber() const override;
 
 protected:
-  void onBeforeExtract() override;
+  void onAfterExtract() override;
 
 private:
   void generateEvents(Poco::Timer &);
@@ -64,7 +64,7 @@ private:
   /// Fake run number to give
   int m_runNumber;
 
-  /// Current DAS run state, updated atomically by onBeforeExtract().
+  /// Current DAS run state, updated by onAfterExtract().
   RunStatus m_runState{Running};
   /// The run-state edge committed by the most recent extractData() call.
   std::optional<RunStatus> m_lastTransition;

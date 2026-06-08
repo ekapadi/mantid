@@ -11,6 +11,7 @@
 #include "MantidKernel/CPUTimer.h"
 #include "MantidKernel/ConfigService.h"
 #include "MantidKernel/WarningSuppressions.h"
+#include "MantidLiveData/Exception.h"
 #include <Poco/Thread.h>
 #include <cxxtest/TestSuite.h>
 
@@ -231,6 +232,48 @@ public:
     TS_ASSERT_EQUALS(listener->runNumber(), runNumberBefore);
 
     ConfigService::Instance().setString("fakeeventdatalistener.endrunevery", "0");
+  }
+
+  /** C1 invariant: an EndRun edge that crosses a NotYet thrown by
+   *  doExtractData() must still be reported by lastTransition() on the
+   *  first successful retry.  With the pre-fix onBeforeExtract()-based
+   *  implementation this test fails: the unconditional
+   *  m_lastTransition.reset() at the top of onBeforeExtract() erases the
+   *  edge on the retry call.
+   *
+   *  Timing note: the 1-second end-run period guarantees that the two
+   *  back-to-back extractData() calls fall inside the same period.  A
+   *  scheduler hiccup that pushes the gap above 1 s would produce a
+   *  false-negative (silent pass against buggy code), not a false-positive.
+   */
+  void test_lastTransition_survives_NotYet_during_EndRun_cycle() {
+    using Mantid::Kernel::ConfigService;
+
+    ConfigService::Instance().setString("fakeeventdatalistener.endrunevery", "1");
+    ConfigService::Instance().setString("fakeeventdatalistener.notyettimes", "1");
+
+    auto listener = LiveListenerFactory::Instance().create("FakeEventDataListener", true);
+    listener->start(0);
+
+    const int runNumberBefore = listener->runNumber();
+
+    // Cross the end-of-run deadline.
+    Poco::Thread::sleep(1100);
+
+    // First call crosses the deadline AND throws NotYet from doExtractData().
+    // onAfterExtract() must not run.
+    TS_ASSERT_THROWS(listener->extractData(), const Mantid::LiveData::Exception::NotYet &);
+
+    // Immediate retry (well inside the same period): doExtractData() succeeds.
+    // The EndRun edge must survive the NotYet — this is the C1 invariant.
+    TS_ASSERT_THROWS_NOTHING(listener->extractData());
+    TS_ASSERT(listener->lastTransition().has_value());
+    TS_ASSERT_EQUALS(listener->lastTransition().value(), ILiveListener::EndRun);
+    TS_ASSERT_EQUALS(listener->runState(), ILiveListener::EndRun);
+    TS_ASSERT_EQUALS(listener->runNumber(), runNumberBefore + 1);
+
+    ConfigService::Instance().setString("fakeeventdatalistener.endrunevery", "0");
+    ConfigService::Instance().setString("fakeeventdatalistener.notyettimes", "0");
   }
 
 private:

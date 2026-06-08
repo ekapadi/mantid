@@ -483,9 +483,9 @@ refactor exists to eliminate.
 This getter incremented ``m_runNumber`` and advanced
 ``m_nextEndRunTime`` as a side effect of being polled.
 
-**Post-refactor.**  The periodic-EndRun decision moves to a private
-helper called from ``onBeforeExtract()``; ``runState()`` becomes a
-pure getter:
+**Post-refactor.**  All end-of-run side effects move to
+``onAfterExtract()``; ``runState()`` becomes a pure getter.
+``onBeforeExtract()`` is not overridden (the base no-op suffices):
 
 .. code-block:: cpp
 
@@ -498,15 +498,19 @@ pure getter:
    std::optional<RunStatus> lastTransition() const override { return m_lastTransition; }
 
    protected:
-   void onBeforeExtract() override;
+   void onAfterExtract() override;
 
    private:
-   void tickRunState();          // moved from the old runStatus()
    RunStatus m_runState{Running};
    std::optional<RunStatus> m_lastTransition;
 
    // Implementation
-   void FakeEventDataListener::tickRunState() {
+   void FakeEventDataListener::onAfterExtract() {
+       // C1 invariant: m_lastTransition is cleared only on the success path
+       // of doExtractData().  All end-of-run side effects are deferred here
+       // for the same reason — otherwise a NotYet retry would erase the edge
+       // in the next onBeforeExtract() call and the EndRun would be silently
+       // dropped by LoadLiveData's retry loop.
        m_lastTransition.reset();
        if (m_endRunEvery > 0 &&
            DateAndTime::getCurrentTime() > m_nextEndRunTime) {
@@ -519,13 +523,14 @@ pure getter:
        }
    }
 
-   void FakeEventDataListener::onBeforeExtract() {
-       tickRunState();
-   }
-
 The externally observable cadence of ``EndRun`` and the
 ``m_runNumber`` increment is preserved; only the trigger moves from
-``runStatus()`` polling to ``extractData()`` invocation.
+``runStatus()`` polling to ``extractData()`` invocation.  Placing all
+side effects in ``onAfterExtract()`` rather than ``onBeforeExtract()``
+is required by the :ref:`C1 invariant <migration-c1-invariant>`:
+``onAfterExtract()`` runs only when ``doExtractData()`` returns
+normally, so a ``NotYet`` thrown from ``doExtractData()`` cannot erase
+or advance state that the retry will need.
 
 **``SINQHMListener``** (pre-refactor): ``runStatus()`` performed an
 HTTP request, parsed the response, wrote the ``hmhost`` member, set
@@ -712,8 +717,9 @@ though the workspace was never handed to the caller.
 ``onAfterExtract()`` fires only on the success path, so the
 :ref:`C1 invariant <migration-c1-invariant>` (edge survives retries)
 is a direct structural consequence of using it rather than an
-inductive argument over a separate cross-call flag.  No in-tree listener other than
-``SNSLiveEventDataListener`` currently overrides this hook.
+inductive argument over a separate cross-call flag.
+``SNSLiveEventDataListener`` and ``FakeEventDataListener`` both
+override this hook; the latter is the worked example in Pattern C above.
 
 
 Further reading

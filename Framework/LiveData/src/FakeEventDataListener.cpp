@@ -53,11 +53,14 @@ API::ListenerState FakeEventDataListener::listenerState() const { return API::Li
 
 std::optional<ILiveListener::RunStatus> FakeEventDataListener::lastTransition() const { return m_lastTransition; }
 
-void FakeEventDataListener::onBeforeExtract() {
-  // Clear edge from the previous cycle first.
+void FakeEventDataListener::onAfterExtract() {
+  // C1 invariant: m_lastTransition is cleared only on the success path of
+  // doExtractData(). All end-of-run side effects (counter bump, deadline
+  // advance, state mutation) are deferred here for the same reason — otherwise
+  // a NotYet retry from LoadLiveData would erase the edge in the next
+  // onBeforeExtract() call and the EndRun boundary would be silently dropped.
   m_lastTransition.reset();
   if (m_endRunEvery > 0 && DateAndTime::getCurrentTime() > m_nextEndRunTime) {
-    // Periodic end-of-run: advance the clock, bump the run number, record edge.
     m_nextEndRunTime = DateAndTime::getCurrentTime() + m_endRunEvery;
     m_runNumber++;
     m_runState = EndRun;
