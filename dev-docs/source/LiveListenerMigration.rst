@@ -566,6 +566,23 @@ Because ``extractData()`` already triggered ``pollStatus()`` implicitly
 in the old code (it called the side-effecting ``runStatus()``), callers
 that only invoke ``extractData()`` see no behavioural change.
 
+.. note::
+
+   Unlike the ``FakeEventDataListener`` example above,
+   ``SINQHMListener`` writes its cached run-state and the ``dimDirty``
+   flag inside ``onBeforeExtract()`` (via ``pollStatus()``) rather than
+   ``onAfterExtract()``.  This is correct **only** because (a)
+   ``doExtractData()`` does not throw ``Exception::NotYet`` and (b) the
+   listener does not override ``lastTransition()``.
+   ``doExtractData()`` *reads* ``dimDirty`` and ``hmhost`` to build the
+   workspace, so the poll must precede the build — that is the
+   load-bearing reason the call lives in ``onBeforeExtract()``.  If a
+   future change to this listener adds a ``NotYet`` path *or* a
+   ``lastTransition()`` override, the ``NoRun → Running`` side effects
+   (``dimDirty`` set, ``oldStatus`` advance) must move to
+   ``onAfterExtract()`` to satisfy the
+   :ref:`C1 invariant <migration-c1-invariant>`.
+
 Pattern D — test mocks
 ~~~~~~~~~~~~~~~~~~~~~~
 

@@ -64,6 +64,16 @@ API::ListenerState SINQHMListener::listenerState() const {
 }
 
 void SINQHMListener::onBeforeExtract() {
+  // C1 note: this listener writes oldStatus / m_cachedRunState / dimDirty
+  // inside onBeforeExtract() rather than onAfterExtract() because
+  // doExtractData() reads dimDirty and hmhost to build the workspace and must
+  // see them current before the build. This placement is safe only because
+  // doExtractData() never throws NotYet. If a NotYet path is ever added — or
+  // if this listener ever overrides lastTransition() — the NoRun→Running side
+  // effects (dimDirty set, oldStatus advance) MUST move to onAfterExtract(),
+  // otherwise a LoadLiveData retry will silently drop the dimension reload.
+  // See LiveListenerMigration.rst (Pattern C) and the C1 invariant section of
+  // SNSLiveEventDataListenerRefactoring.rst for the full explanation.
   std::istream &istr = httpRequest("/admin/textstatus.egi");
   std::stringstream oss;
   Poco::StreamCopier::copyStream(istr, oss);
@@ -107,7 +117,8 @@ std::shared_ptr<Workspace> SINQHMListener::doExtractData() {
   static const char *dimNames[] = {"x", "y", "z", "t"};
 
   if (dimDirty) {
-    // hmhost and dimDirty are already current — set by onBeforeExtract().
+    // hmhost and dimDirty were set by onBeforeExtract() before this call.
+    // See the C1 note on onBeforeExtract() for why that placement is safe.
     loadDimensions();
   }
 
