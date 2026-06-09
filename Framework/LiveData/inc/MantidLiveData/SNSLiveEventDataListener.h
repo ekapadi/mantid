@@ -251,6 +251,13 @@ protected:
   /// as the construction-time initial value gates the very first run.
   std::atomic<bool> m_bgThreadCaughtUp{false};
 
+  /// Stable, committed DAS run state read by runState().  Only ever takes
+  /// the values {NoRun, JoiningRun, Running} — never BeginRun or EndRun.
+  /// The BeginRun/EndRun *edges* are delivered to consumers via
+  /// m_lastTransition (read by lastTransition()) and the legacy
+  /// runStatus() shim, not via this field.  Written from rxPacket(NEW_RUN)
+  /// on the joining path, and from the onBeginRun() / onEndRun() hooks
+  /// dispatched by onBeforeExtract() / onAfterExtract().
   ILiveListener::RunStatus m_adaraRunStatus{RunStatus::NoRun};
   std::optional<RunStatus> m_pendingTransition;
   /// Cleared in onAfterExtract() only after a successful doExtractData() call.

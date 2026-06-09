@@ -703,8 +703,12 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
     }
 
   } else if (pkt.status() == ADARA::RunStatus::END_RUN) {
-    // Run has ended:  update m_adaraRunStatus, set the end time and set the flag
-    // to stop parsing network packets.  (see comments below for why)
+    // Run has ended: queue the EndRun transition edge, record run_end, and
+    // set the back-pressure flag to stop parsing network packets so the
+    // foreground can harvest the finishing run's events before onEndRun()
+    // commits the state transition (m_adaraRunStatus is advanced to NoRun
+    // from onEndRun(), not here — see comments below for why we pause
+    // network reads).
     if ((m_adaraRunStatus != Running) && (m_adaraRunStatus != JoiningRun) && (m_pendingTransition != BeginRun)) {
       // Previous status should have been Running (or JoiningRun for a run that
       // ended before init completed).  Spit out a warning if it's not.
