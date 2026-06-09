@@ -418,8 +418,14 @@ legacy implementation are:
   path: no cache reset, no ``m_deferredRunDetailsPkt`` needed).
 * On ``END_RUN``: enforce the single-slot invariant, queue
   ``m_pendingTransition = EndRun``, set ``m_pauseNetRead = true``,
-  set ``m_adaraRunStatus = EndRun``, copy ``setRunDetails(pkt)`` if
-  ``!haveRunNumber`` (unchanged).
+  copy ``setRunDetails(pkt)`` if ``!haveRunNumber`` (unchanged).
+  ``m_adaraRunStatus`` is **not** mutated here — it is advanced to
+  ``NoRun`` later from ``onEndRun()`` (dispatched from
+  ``onAfterExtract()`` after ``doExtractData()`` has harvested the
+  finishing run's events).  Until that commit, ``runState()`` continues
+  to report ``Running`` (or ``JoiningRun``); the ``EndRun`` edge is
+  delivered to consumers via ``lastTransition()`` and the legacy
+  ``runStatus()`` shim, satisfying the "exactly once" delivery contract.
 
 In ``rxPacket(const ADARA::AnnotationPkt &pkt)``, ``PAUSE`` and
 ``RESUME`` markers call ``onRunPause(true/false)`` directly from the
