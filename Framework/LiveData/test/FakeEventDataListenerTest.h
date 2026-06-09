@@ -262,7 +262,18 @@ public:
 
     // First call crosses the deadline AND throws NotYet from doExtractData().
     // onAfterExtract() must not run.
-    TS_ASSERT_THROWS(listener->extractData(), const Mantid::LiveData::Exception::NotYet &);
+    //
+    // TS_ASSERT_THROWS(listener->extractData(), const Mantid::LiveData::Exception::NotYet &);
+    try {
+      // Work-around for RTTI issues on some platforms:
+      //   RTTI for 'NotYet' cannot be compared across dylib boundary.
+      listener->extractData();
+      TS_FAIL("Expected Exception::NotYet was not thrown.");
+    } catch (const std::exception &e) {
+      static constexpr std::string_view notYetPrefix = "NotYet: ";
+      const std::string_view what{e.what()};
+      TS_ASSERT_EQUALS(what.find(notYetPrefix), 0);
+    }
 
     // Immediate retry (well inside the same period): doExtractData() succeeds.
     // The EndRun edge must survive the NotYet — this is the C1 invariant.
