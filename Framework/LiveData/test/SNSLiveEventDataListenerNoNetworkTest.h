@@ -74,8 +74,9 @@ public:
   }
 
   bool readPauseNetRead() const {
-    // m_pauseNetRead is atomic but not mutex-guarded; load directly.
-    return m_pauseNetRead;
+    // m_pauseNetRead is std::atomic<bool>; load with the same acquire
+    // semantics the bg loop uses (run() in SNSLiveEventDataListener.cpp).
+    return m_pauseNetRead.load(std::memory_order_acquire);
   }
 
   /// Feed raw ADARA packet bytes through the inherited Parser::bufferParse()

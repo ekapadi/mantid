@@ -105,7 +105,7 @@ SNSLiveEventDataListener::~SNSLiveEventDataListener() {
   if (m_thread.isRunning()) {
     // Ask the thread to exit (and hope that it does - Poco doesn't
     // seem to have an equivalent to pthread_cancel
-    m_stopThread = true;
+    m_stopThread.store(true, std::memory_order_release);
     try {
       m_thread.join(RECV_TIMEOUT * 2 * 1000); // *1000 because join() wants time in milliseconds
     } catch (Poco::TimeoutException &) {
@@ -242,10 +242,10 @@ void SNSLiveEventDataListener::run() {
     {
       g_log.error("SNSLiveEventDataListener::run(): Failed to send client "
                   "hello packet. Thread exiting.");
-      m_stopThread = true;
+      m_stopThread.store(true, std::memory_order_release);
     }
 
-    while (!m_stopThread) // loop until the foreground thread tells us to stop
+    while (!m_stopThread.load(std::memory_order_acquire)) // loop until the foreground thread tells us to stop
     {
       // Gate: only honour m_pauseNetRead when no parse is in flight.
       // Short-circuit evaluation enforces the invariant — when
@@ -253,7 +253,8 @@ void SNSLiveEventDataListener::run() {
       // check is skipped entirely, preventing a race where the foreground
       // clears m_pauseNetRead while we are still mutating state.
       // cppcheck-suppress knownConditionTrueFalse
-      while (m_bgThreadCaughtUp.load(std::memory_order_acquire) && m_pauseNetRead && !m_stopThread) {
+      while (m_bgThreadCaughtUp.load(std::memory_order_acquire) && m_pauseNetRead.load(std::memory_order_acquire) &&
+             !m_stopThread.load(std::memory_order_acquire)) {
         // foreground thread doesn't want us to process any more packets until
         // it's ready.  See comments in rxPacket( const ADARA::RunStatusPkt
         // &pkt)
@@ -261,7 +262,7 @@ void SNSLiveEventDataListener::run() {
       }
 
       // cppcheck-suppress knownConditionTrueFalse
-      if (m_stopThread) {
+      if (m_stopThread.load(std::memory_order_acquire)) {
         // it's possible that a stop request came in while we were sleeping...
         break;
       }
@@ -678,7 +679,7 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
       // Save a copy of the packet so we can call setRunDetails() in onBeginRun()
       // after extractData() has fetched any data remaining from before this run.
       m_deferredRunDetailsPkt = std::shared_ptr<ADARA::RunStatusPkt>(new ADARA::RunStatusPkt(pkt));
-      m_pauseNetRead = true;
+      m_pauseNetRead.store(true, std::memory_order_release);
     } else {
       // Joining case: NEW_RUN arrived before workspace initialisation completed.
       // This is the normal startup path: every run whose NEW_RUN arrives while
@@ -753,7 +754,7 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
     // This flag will be cleared in onEndRun() (called from onAfterExtract()),
     // which is guaranteed to be called after extractData() has returned data.
 
-    m_pauseNetRead = true;
+    m_pauseNetRead.store(true, std::memory_order_release);
 
     // Set the run number & start time if we don't already have it
     if (!haveRunNumber) {
@@ -780,7 +781,7 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::RunStatusPkt &pkt) {
     }
   }
 
-  return m_pauseNetRead;
+  return m_pauseNetRead.load(std::memory_order_acquire);
   // If we've set m_pauseNetRead, it means we want to stop processing packets.
   // In that case, we need to return true so that we'll break out of the read()
   // loop in the packet parser.
@@ -1511,7 +1512,7 @@ API::ListenerState SNSLiveEventDataListener::listenerState() const {
     return API::ListenerState::Error;
   if (!m_isConnected)
     return API::ListenerState::Disconnected;
-  if (m_pauseNetRead)
+  if (m_pauseNetRead.load(std::memory_order_acquire))
     return API::ListenerState::ReadWait;
   return API::ListenerState::Connected;
 }
@@ -1559,7 +1560,7 @@ void SNSLiveEventDataListener::onBeforeExtract() {
       std::lock_guard<std::mutex> scopedLock(m_mutex);
       m_lastTransition = BeginRun;
     }
-    m_pauseNetRead = false;
+    m_pauseNetRead.store(false, std::memory_order_release);
   }
 }
 
@@ -1577,7 +1578,7 @@ void SNSLiveEventDataListener::onAfterExtract() {
       m_lastTransition = EndRun;
     }
     onEndRun();
-    m_pauseNetRead = false;
+    m_pauseNetRead.store(false, std::memory_order_release);
   }
 }
 

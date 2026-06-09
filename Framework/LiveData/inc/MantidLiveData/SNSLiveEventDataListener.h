@@ -161,8 +161,10 @@ private:
   bool m_isConnected{false};
 
   Poco::Thread m_thread;
-  bool m_stopThread{false}; // background thread checks this periodically.
-                            // If true, the thread exits
+  /// Background thread checks this periodically. If true, the thread exits.
+  /// Atomic because the bg loop reads it without holding m_mutex while the
+  /// destructor writes it; same rationale as m_pauseNetRead.
+  std::atomic<bool> m_stopThread{false};
 
   Types::Core::DateAndTime m_startTime; // The requested start time for the data
                                         // stream (needed by the run() function)
@@ -231,8 +233,19 @@ protected:
   // requiring friend declarations (which cannot name a class defined in a test
   // header).  All fields here are guarded by m_mutex unless otherwise noted.
   // ---------------------------------------------------------------------------
-  mutable std::mutex m_mutex; // protects m_eventBuffer & m_adaraRunStatus
-  bool m_pauseNetRead{false};
+  /// Protects m_eventBuffer, m_adaraRunStatus, m_pendingTransition,
+  /// m_lastTransition, m_isDasPaused, m_instrumentXML, m_instrumentName,
+  /// m_nameMap, m_deferredRunDetailsPkt, and m_workspaceInitialized.
+  /// Does NOT protect m_pauseNetRead, m_stopThread, or m_bgThreadCaughtUp —
+  /// those are std::atomic<bool> and are accessed lock-free.
+  mutable std::mutex m_mutex;
+  /// Back-pressure flag set true by rxPacket(RunStatusPkt) on NEW_RUN/END_RUN
+  /// to halt the bg-thread read loop until the foreground calls extractData().
+  /// Atomic because the bg loop reads it without holding m_mutex (see run()).
+  /// Acquire/release ordering pairs with the bg loop's read in run(), matching
+  /// the pattern already used for m_bgThreadCaughtUp. m_mutex does NOT
+  /// protect this field.
+  std::atomic<bool> m_pauseNetRead{false};
 
   // These 2 strings are needed to initialize m_eventBuffer.  Placed in
   // protected: so test subclasses can inject instrument data directly.
