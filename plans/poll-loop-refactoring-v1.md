@@ -115,7 +115,7 @@ This ordering preserves the invariant that a full parse buffer (`bufferFillLengt
 
 On `bytesRead == 0`, call the helper with:
 
-> `SNSLiveEventDataListener::run(): server disconnected while reading ADARA stream.`
+> `SNSLiveEventDataListener: server disconnected while reading ADARA stream.`
 
 Do not continue looping.
 
@@ -160,7 +160,7 @@ try {
 } catch (Poco::Net::NetException &e) {
   // ConnectionResetException / ConnectionAbortedException / etc.  All
   // genuinely fatal — connection is gone, helper terminates the loop.
-  fatal(std::string("SNSLiveEventDataListener::run(): network read failed: ") + e.name());
+  fatal(std::string("SNSLiveEventDataListener: network read failed: ") + e.name());
 }
 ```
 
@@ -174,7 +174,7 @@ Notes:
 
 ```cpp
 if (bytesRead == 0) {
-  fatal("SNSLiveEventDataListener::run(): server disconnected while reading ADARA stream.");
+  fatal("SNSLiveEventDataListener: server disconnected while reading ADARA stream.");
 }
 if (bytesRead > 0) {
   bufferBytesAppended(bytesRead);
@@ -192,7 +192,7 @@ if (mode & Poco::Net::PollSet::POLL_READ) {
 }
 if (mode & Poco::Net::PollSet::POLL_ERROR) {
   // Only reached if POLL_READ branch did not already exit via fatal().
-  fatal("SNSLiveEventDataListener::run(): socket poll reported error.");
+  fatal("SNSLiveEventDataListener: socket poll reported error.");
 }
 ```
 
@@ -258,13 +258,13 @@ void SNSLiveEventDataListener::run() {
 
   try {
     if (!m_isConnected) {
-      throw std::runtime_error("SNSLiveEventDataListener::run(): No connection to SMS server.");
+      throw std::runtime_error("SNSLiveEventDataListener: No connection to SMS server.");
     }
 
     // Send hello packet (unchanged construction).
     // ...
     if (m_socket.sendBytes(helloPkt, sizeof(helloPkt)) != sizeof(helloPkt)) {
-      fatal("SNSLiveEventDataListener::run(): short write on client hello packet.");
+      fatal("SNSLiveEventDataListener: short write on client hello packet.");
     }
 
     Poco::Net::PollSet pollSet;
@@ -304,10 +304,10 @@ void SNSLiveEventDataListener::run() {
                 // every ~100 ms and the log would flood.
                 bytesRead = -1;
               } catch (Poco::Net::NetException &e) {
-                fatal(std::string("SNSLiveEventDataListener::run(): network read failed: ") + e.name());
+                fatal(std::string("SNSLiveEventDataListener: network read failed: ") + e.name());
               }
               if (bytesRead == 0) {
-                fatal("SNSLiveEventDataListener::run(): server disconnected while reading ADARA stream.");
+                fatal("SNSLiveEventDataListener: server disconnected while reading ADARA stream.");
               }
               if (bytesRead > 0) {
                 bufferBytesAppended(bytesRead);
@@ -319,7 +319,7 @@ void SNSLiveEventDataListener::run() {
           if (mode & Poco::Net::PollSet::POLL_ERROR) {
             // Only reached if the POLL_READ branch did not already terminate
             // the loop via fatal(recv==0).
-            fatal("SNSLiveEventDataListener::run(): socket poll reported error.");
+            fatal("SNSLiveEventDataListener: socket poll reported error.");
           }
         }
       }
@@ -358,10 +358,10 @@ ______________________________________________________________________
 
 Use precise, grep-friendly messages:
 
-- `SNSLiveEventDataListener::run(): server disconnected while reading ADARA stream.`
-- `SNSLiveEventDataListener::run(): socket poll reported error.`
-- `SNSLiveEventDataListener::run(): network read failed: <NetException name>`
-- `SNSLiveEventDataListener::run(): short write on client hello packet.`
+- `SNSLiveEventDataListener: server disconnected while reading ADARA stream.`
+- `SNSLiveEventDataListener: socket poll reported error.`
+- `SNSLiveEventDataListener: network read failed: <NetException name>`
+- `SNSLiveEventDataListener: short write on client hello packet.`
 
 These messages are surfaced via `m_backgroundException`; they must stand on their own.
 
@@ -423,7 +423,7 @@ These exercise the parts of the contract that do not require a socket. They use 
 These use `MockSMSServer` and the existing `PktDisconnect{}`, `PktWaitForExtract{}` script entries. All follow the project's `waitFor(...)` polling convention — no `sleep_for(...)` after `scriptIndex()` gates.
 
 1. **`test_serverDisconnect_messageContainsRunPrefix`**
-   Build the standard geometry / beamline / NEW_RUN preamble, then `PktDisconnect{}`. After `waitFor([&]{ return m_listener->listenerState() == Error; }, 5s)`, drive `extractData()` and capture the thrown `std::runtime_error`. Assert `what()` contains the substring `"SNSLiveEventDataListener::run(): server disconnected while reading ADARA stream"`. Pins the error-message guidance in the plan.
+   Build the standard geometry / beamline / NEW_RUN preamble, then `PktDisconnect{}`. After `waitFor([&]{ return m_listener->listenerState() == Error; }, 5s)`, drive `extractData()` and capture the thrown `std::runtime_error`. Assert `what()` contains the substring `"SNSLiveEventDataListener: server disconnected while reading ADARA stream"`. Pins the error-message guidance in the plan.
 
 1. **`test_serverDisconnect_during_ReadWait_setsError`**
    Script: geometry / beamline / NEW_RUN / `PktWaitForExtract{}` (so the listener pauses) / `PktDisconnect{}`. The listener is in `ReadWait` when the server closes. Assert that without ever releasing the extract gate, `waitFor([&]{ return m_listener->listenerState() == Error; }, 5s)` succeeds within a couple of poll periods. Pins that back-pressure does **not** mask a disconnect — the bg thread must be polling, not deep-sleeping inside `receiveBytes()`.
