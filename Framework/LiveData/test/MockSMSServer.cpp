@@ -190,6 +190,17 @@ struct MockSMSServer::Impl {
           m_scriptIndex = i + 1;
           return;
 
+        } else if (std::holds_alternative<PktAbruptClose>(entry)) {
+          // Close the underlying fd without draining the kernel send buffer.
+          // On Linux this makes the peer's poll() wake with EPOLLHUP, which
+          // Poco's PollSet reports as POLL_ERROR.
+          int fd = m_clientSocket.impl()->sockfd();
+          if (fd >= 0)
+            ::close(fd);
+          std::lock_guard<std::mutex> lock(m_mutex);
+          m_scriptIndex = i + 1;
+          return;
+
         } else if (std::holds_alternative<PktWaitForExtract>(entry)) {
           // Wait until releaseExtractGate() is called, or until watchdog fires
           std::unique_lock<std::mutex> lock(m_mutex);
