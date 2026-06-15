@@ -231,29 +231,13 @@ public:
   // ----- §6.1 Legacy behavioural contract (remainder) -----
 
   void test_LegacyConnectAndDisconnect() {
-    TS_WARN("XFAIL: SNSLiveEventDataListener does not detect a clean peer-close. "
-            "Poco::Net::StreamSocket::receiveBytes() returns 0 bytes on EOF, but "
-            "the bg read loop (SNSLiveEventDataListener.cpp:264-294) does not "
-            "treat a zero-byte return as fatal, so m_isConnected is never set "
-            "false after a server-side close.  Defect noted in PR comment "
-            "4553042112; no ticket filed yet.  Remove this TS_WARN and the "
-            "return below when the production fix lands; the assertions that "
-            "follow express the intended contract.  (Sibling test: see §5.2 "
-            "test_serverDisconnect_setsErrorState for the variant that first "
-            "sends geometry/beamline/NEW_RUN.)");
-    return;
-    // --- intended behaviour (currently unreached) ---
     m_server->script({Testing::PktDisconnect{}});
     m_server->start();
     TS_ASSERT(connectListener());
     TS_ASSERT(m_listener->isConnected());
-    // Server-side: wait for the scripted PktDisconnect{} to complete
-    // (scriptIndex advances past it once the server has closed its end).
+    // Wait for the server to complete its side of the close.
     waitFor([&] { return m_server->scriptIndex() >= 1; }, std::chrono::seconds{5});
-    // Give the listener a window in which it would notice the close if the
-    // production fix were in place.
-    std::this_thread::sleep_for(std::chrono::milliseconds{200});
-    // Intended: listener detects EOF and transitions out of Connected.
+    // Poll for the listener to detect the peer close and transition out of Connected.
     waitFor([&] { return !m_listener->isConnected(); }, std::chrono::seconds{5});
     TS_ASSERT(!m_listener->isConnected());
   }
@@ -1033,16 +1017,10 @@ public:
   }
 
   void test_serverDisconnect_setsErrorState() {
-    TS_WARN("XFAIL: SNSLiveEventDataListener does not detect a clean peer-close. "
-            "Poco::Net::StreamSocket::receiveBytes() returns 0 bytes on EOF, but "
-            "the bg read loop (SNSLiveEventDataListener.cpp:264-294) does not "
-            "treat a zero-byte return as fatal, so m_isConnected is never set "
-            "false after a server-side close.  Defect noted in PR comment "
-            "4553235918; no ticket filed yet.  Remove this TS_WARN and the "
-            "return below when the production fix lands; the assertions that "
-            "follow express the intended contract.");
-    return;
-    // --- intended behaviour (currently unreached) ---
+    // Verifies that a clean peer-close (PktDisconnect) causes the listener to
+    // transition to listenerState()==Error.  The bg thread detects
+    // receiveBytes()==0 (EOF) and stores m_backgroundException; isConnected()
+    // must flip to false atomically with that transition.
     m_server->script({
         Testing::buildGeometryPkt(kMinimalIDF()),
         Testing::buildBeamlineInfoPkt(kInstrumentName),
@@ -1052,12 +1030,98 @@ public:
     m_server->start();
     TS_ASSERT(connectListener());
     waitFor([&] { return m_server->scriptIndex() >= 4; }, std::chrono::seconds{5});
-    // Give the listener a window in which it would notice the close if the
-    // production fix were in place.
-    std::this_thread::sleep_for(std::chrono::milliseconds{200});
-    // Intended: listener detects EOF and transitions out of Connected.
+    // Poll until the listener detects the EOF and sets Error state.
+    waitFor([&] { return m_listener->listenerState() == API::ListenerState::Error; }, std::chrono::seconds{5});
     TS_ASSERT(!m_listener->isConnected());
-    TS_ASSERT_DIFFERS(m_listener->listenerState(), API::ListenerState::Connected);
+    TS_ASSERT_EQUALS(m_listener->listenerState(), API::ListenerState::Error);
+  }
+
+  // ----- §6.9 Disconnect detection (extended) -----
+
+  void test_serverDisconnect_before_initialization_setsError() {
+    // EOF arrives before any ADARA packets — the listener has not started
+    // workspace initialisation when the bg thread detects receiveBytes()==0.
+    m_server->script({Testing::PktDisconnect{}});
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&] { return m_listener->listenerState() == API::ListenerState::Error; }, std::chrono::seconds{5});
+    TS_ASSERT(!m_listener->isConnected());
+    TS_ASSERT_EQUALS(m_listener->listenerState(), API::ListenerState::Error);
+  }
+
+  void test_serverDisconnect_rethrows_runtime_error_with_prefix() {
+    // After a clean peer-close, runState() must rethrow the stored
+    // m_backgroundException as std::runtime_error whose message contains
+    // "SNSLiveEventDataListener:" (user-visible log prefix, no ::run()).
+    m_server->script({
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 1, 0x0000000100000000ULL),
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&] { return m_listener->listenerState() == API::ListenerState::Error; }, std::chrono::seconds{5});
+    try {
+      (void)m_listener->runState();
+      TS_FAIL("Expected std::runtime_error from runState() — nothing was thrown");
+    } catch (const std::runtime_error &e) {
+      const std::string msg{e.what()};
+      TSM_ASSERT("Expected message to contain 'SNSLiveEventDataListener:'",
+                 msg.find("SNSLiveEventDataListener:") != std::string::npos);
+      TSM_ASSERT("Expected message NOT to contain '::run()' (per naming convention)",
+                 msg.find("::run()") == std::string::npos);
+    } catch (...) {
+      TS_FAIL("Expected std::runtime_error but got a different exception type");
+    }
+  }
+
+  void test_partialHelloSend_setsError() {
+    // A listener subclass that simulates an unrecoverable write failure on the
+    // CLIENT_HELLO packet: sendHelloPacket() returns 0.  The run() method must
+    // detect the short write via the != sizeof(helloPkt) check and transition
+    // to Error state without hanging.
+    struct ShortWriteListener : public SNSLiveEventDataListener {
+    protected:
+      int sendHelloPacket(const void *, int) override { return 0; }
+    };
+
+    // The server only needs to accept the connection; it blocks on
+    // recvPacket() until the listener closes its socket on destruction.
+    m_server->script({Testing::PktDisconnect{}});
+    m_server->start();
+
+    Poco::Net::SocketAddress udsAddr(Poco::Net::AddressFamily::UNIX_LOCAL, m_sockPath);
+    m_listener = std::make_unique<ShortWriteListener>();
+    if (!m_listener->connect(udsAddr)) {
+      TS_FAIL("connect() returned false — cannot proceed with test");
+      return;
+    }
+    m_listener->start();
+
+    waitFor([&] { return m_listener->listenerState() == API::ListenerState::Error; }, std::chrono::seconds{5});
+    TS_ASSERT(!m_listener->isConnected());
+    TS_ASSERT_EQUALS(m_listener->listenerState(), API::ListenerState::Error);
+  }
+
+  void test_pollError_setsError_via_abruptClose() {
+    // PktAbruptClose closes the server fd via ::close() without draining the
+    // kernel send buffer, maximising the chance of EPOLLHUP (POLL_ERROR) on
+    // the client rather than a readable-then-EOF sequence.  Either detection
+    // path (POLL_ERROR or zero-byte read on EPOLLIN+EPOLLHUP) must result in
+    // listenerState() == Error.
+    m_server->script({
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, 1, 0x0000000100000000ULL),
+        Testing::PktAbruptClose{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&] { return m_server->scriptIndex() >= 4; }, std::chrono::seconds{5});
+    waitFor([&] { return m_listener->listenerState() == API::ListenerState::Error; }, std::chrono::seconds{5});
+    TS_ASSERT(!m_listener->isConnected());
+    TS_ASSERT_EQUALS(m_listener->listenerState(), API::ListenerState::Error);
   }
 
   void test_connectFailure_returnsFalse() {

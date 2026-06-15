@@ -67,6 +67,11 @@ protected:
   /// workspace hand-off.
   void onAfterExtract() override;
 
+  /// Sends all bytes in buf over m_socket, retrying short writes.  Returns
+  /// the total bytes sent (== size on success, < size on unrecoverable failure).
+  /// Virtual so test subclasses can inject short-write or failure scenarios.
+  virtual int sendHelloPacket(const void *buf, int size);
+
   /// Called from onBeforeExtract() when a BeginRun transition is dequeued.
   /// Acquires m_mutex itself.
   ///
@@ -154,7 +159,6 @@ private:
   std::vector<std::string> m_monitorLogs;
 
   Poco::Net::StreamSocket m_socket;
-  bool m_isConnected{false};
 
   Poco::Thread m_thread;
   /// Background thread checks this periodically. If true, the thread exits.
@@ -234,6 +238,8 @@ protected:
   /// m_nameMap, m_requiredLogs, m_deferredRunDetailsPkt, and m_workspaceInitialized.
   /// Does NOT protect m_pauseNetRead, m_stopThread, or m_bgThreadCaughtUp —
   /// those are std::atomic<bool> and are accessed lock-free.
+  bool m_isConnected{false};
+
   mutable std::mutex m_mutex;
   /// Back-pressure flag set true by rxPacket(RunStatusPkt) on NEW_RUN/END_RUN
   /// to halt the bg-thread read loop until the foreground calls extractData().
