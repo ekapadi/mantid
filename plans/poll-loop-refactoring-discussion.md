@@ -37,22 +37,34 @@ The new loop is `Poco::Net::PollSet`-driven:
 
 ```
 pollSet registered before the loop (once)
+bool needParse = false   ← bg-thread-local; plain bool; not atomic
     ↕
 loop: check m_stopThread
     ↕
     pause-loop (m_bgThreadCaughtUp + m_pauseNetRead, unchanged)
     ↕
-    poll(100 ms)
+    if needParse already set: skip poll() — bytes are in the parser's
+      internal buffer, not the kernel's; go straight to parse
+    else:
+      poll(100 ms)
+      ↕
+      if POLL_READ + bufFillLen > 0:
+          receiveBytes()
+          - recv==0  → fatal("server disconnected...")
+          - recv>0   → bufferBytesAppended(n); needParse = true
+          - TimeoutException → transient, skip this iteration
+          - NetException → fatal("network read failed: <name>")
+      if POLL_READ + bufFillLen == 0:
+          needParse = true  (buffer full — drain before next read)
+      ↕
+      if POLL_ERROR: fatal("socket poll reported error.")
     ↕
-    if POLL_READ: receiveBytes() if buffer has free space
-        - recv==0  → fatal("server disconnected...")
-        - recv>0   → bufferBytesAppended(n)
-        - TimeoutException → transient, skip this iteration
-        - NetException → fatal("network read failed: <name>")
-    ↕
-    if POLL_ERROR: fatal("socket poll reported error.")
-    ↕
-    bufferParse() unconditionally  ← critical, see §3
+    if needParse:
+        needParse = false
+        bufferParse()   ← conditional; see §2
+        - returned <0 → needParse = true (interrupted; see §2)
+        - returned  0 → fragment only; next iter polls (no sleep)
+        - returned >0 → complete packets processed; loop back to poll
 ```
 
 Every fatal failure path goes through a single `fatal` lambda that:
@@ -85,9 +97,10 @@ Under a 100 ms poll timeout the loop would call it ~9 times per second
 during idle — pointless string allocations and CPU cycles spent doing
 nothing.
 
-The loop therefore uses a `bool needParse` flag and a `bool pendingParseBytes`
-flag (declared **outside** the while loop) and calls `bufferParse()` only
-when one of three conditions applies:
+The loop uses a single **`bool needParse`** declared **outside** the
+`while` loop (bg-thread-local; plain `bool` — only this thread touches
+it, so no `std::atomic` is needed). `bufferParse()` runs only when one
+of three conditions sets `needParse = true`:
 
 1. **New bytes were just appended** (`bytesRead > 0` →
    `bufferBytesAppended()` called → `needParse = true`). The freshly
@@ -99,15 +112,24 @@ when one of three conditions applies:
    is the only way to free space so the loop makes forward progress
    instead of spinning on `POLL_READ`.
 
-1. **A prior parse was interrupted mid-buffer** (`pendingParseBytes = true`
-   → `needParse = true` at the top of the next iteration). See the
-   critical subsection below.
+1. **A prior parse was interrupted mid-buffer** (`bufferParse()` returned
+   negative → `needParse = true`). See the critical subsection below.
 
-In all other cases — poll timeout with no carryover, spurious
-`Poco::TimeoutException` from `receiveBytes()` — `needParse` stays
-`false` and the parse block is skipped entirely. `poll()` already
-consumed up to 100 ms; the loop goes straight back to `poll()` without
-an additional sleep.
+In all other cases — poll timeout, spurious `Poco::TimeoutException` from
+`receiveBytes()` — `needParse` stays `false` and both the parse block
+*and* any redundant sleep are skipped. `poll()` already consumed up to
+100 ms; the loop goes straight back to `poll()`.
+
+### Skipping `poll()` when `needParse` is already true
+
+When `needParse` carries over from the previous iteration (case 3 above),
+the pending bytes are in the **parser's internal buffer** — the kernel's
+socket receive buffer is empty. Calling `poll()` before parsing would
+block for up to 100 ms watching a socket that has nothing to report. The
+loop therefore wraps the entire read path in `if (!needParse)` and goes
+directly to `bufferParse()` when the flag is already set. The pause
+condition is still re-evaluated at the top of each iteration before this
+decision is made.
 
 ### Critical case 3 — `rxPacket` interrupts `bufferParse()` mid-buffer
 
@@ -122,24 +144,16 @@ The remaining bytes from subsequent packets (e.g. events and the next
 they have already been removed from the kernel's socket receive buffer
 by a prior `receiveBytes()` call. After the bg thread enters the pause
 loop and the foreground eventually calls `extractData()` to release
-`m_pauseNetRead`, the bg thread wakes up and calls `poll()`. But
-`poll()` will **not** report `POLL_READ` for bytes that are already in
-the parser's buffer — those bytes are invisible to the kernel. Without
-`pendingParseBytes`, the remaining packets would be stranded forever
-and the listener would stall.
+`m_pauseNetRead`, the bg thread wakes up. But `poll()` will **not**
+report `POLL_READ` for bytes already in the parser's buffer — those bytes
+are invisible to the kernel. Without the `needParse` carry-over, the
+remaining packets would be stranded forever and the listener would stall.
 
-The fix: when `bufferParse()` returns negative, set
-`pendingParseBytes = true`. At the top of the next iteration:
-
-```cpp
-bool needParse = pendingParseBytes;
-pendingParseBytes = false;
-```
-
-This causes `bufferParse()` to run after the pause loop releases —
-without needing a `POLL_READ` event — processing the next run's packets
-and eventually setting `m_pauseNetRead` again for the foreground to
-harvest.
+The fix: when `bufferParse()` returns negative, leave `needParse = true`
+(it was reset to `false` at the start of the parse block; set it back).
+The next iteration skips `poll()` and re-enters the parse block directly,
+processing the next run's packets and eventually setting `m_pauseNetRead`
+again for the foreground to harvest.
 
 **This case was discovered empirically**: an initial version that only
 tracked cases 1 and 2 caused `test_MonitorLiveData_workspace_renaming_unchanged`
