@@ -76,46 +76,71 @@ with a write-all retry loop and serves as a test seam (see §5).
 
 ______________________________________________________________________
 
-## 2. `bufferParse()` must run unconditionally — why this matters
+## 2. When `bufferParse()` runs — and when it doesn't
 
-The ADARA parser maintains an internal buffer. `bufferFillLength()` returns
-the *free space remaining*. When it returns `0`, the buffer is **full of
-unparsed bytes**; the only way to make room for new reads is to parse.
+`Parser::bufferParse()` on an empty buffer is defined but wasteful:
+it appends `"bufferParse() nothing to do; "` to its `log_info` output
+(`Framework/LiveData/src/ADARA/ADARAParser.cpp:77`) and returns `0`.
+Under a 100 ms poll timeout the loop would call it ~9 times per second
+during idle — pointless string allocations and CPU cycles spent doing
+nothing.
 
-The naive implementation would write:
+The loop therefore uses a `bool needParse` flag and calls
+`bufferParse()` only in the two cases where it can actually make
+progress:
+
+1. **New bytes were just appended** (`bytesRead > 0` →
+   `bufferBytesAppended()` called → `needParse = true`). The freshly
+   appended bytes may complete one or more pending packets.
+
+1. **Buffer is full and the kernel still has bytes ready** (`POLL_READ`
+   signaled, `bufFillLen == 0` → `needParse = true`). We cannot read
+   more bytes until the parser drains some complete packets; parsing
+   is the only way to free space so the loop makes forward progress
+   instead of spinning on `POLL_READ`.
+
+In all other cases — poll timeout, spurious `Poco::TimeoutException`
+from `receiveBytes()`, fragment-only carryover with no new bytes —
+`needParse` stays `false` and the parse block is skipped entirely.
+`poll()` already consumed up to 100 ms, so no additional sleep is
+needed; the loop simply goes back to `poll()`.
+
+### The buffer-full deadlock (case 2)
+
+The naive version of case 2 would be:
 
 ```cpp
 if (mode & POLL_READ) {
     if (bufFillLen) { recv...; bufferBytesAppended(n); }
-    bufferParse(...);   // ← WRONG: inside POLL_READ branch
+    // WRONG if placed here: inside POLL_READ only — misses the
+    // bufFillLen==0 arm where read is skipped
+    bufferParse(...);
 }
 ```
 
-When the buffer fills, `bufFillLen == 0` on the next iteration. The
-`if (bufFillLen)` block is skipped (correctly), but if `bufferParse()` is
-also inside the `if (POLL_READ)` block, and POLL_READ is signaled (which
-it will be — the kernel sees unread data), the code falls through to
-`bufferParse()`. But consider a subtle variant: if `bufferParse()` is only
-reached *inside* the `if (bufFillLen)` block, the buffer stays full, the
-kernel keeps signaling POLL_READ, and the loop spins with no progress.
-
-The correct implementation calls `bufferParse()` **outside and after** both
-the POLL_READ and POLL_ERROR branches, on every iteration:
+The correct structure is an `if / else` on `bufFillLen` inside the
+`POLL_READ` arm:
 
 ```cpp
-// parse runs unconditionally every iteration
-m_bgThreadCaughtUp.store(false, std::memory_order_release);
-int packetsParsed = bufferParse(bufferParseLog);
-m_bgThreadCaughtUp.store(true, std::memory_order_release);
+if (mode & POLL_READ) {
+    if (bufFillLen) {
+        // recv → bufferBytesAppended → needParse = true
+    } else {
+        needParse = true;  // buffer full — must drain to make room
+    }
+}
 ```
 
-This is exactly what the current code does (lines 343–349 of `run()`), and
-it is what the old blocking loop did too. Do not move it inside either event
-branch.
+This ensures that a full buffer is always drained on the next
+POLL_READ wake, never stuck in a spin with no progress.
 
-The `m_bgThreadCaughtUp` `false/true` bracketing around `bufferParse()` is
-also load-bearing: it prevents the foreground from snapshotting state while
-the bg thread is mid-parse (see §6).
+### `m_bgThreadCaughtUp` bracketing
+
+The `false/true` bracketing is inside the `if (needParse)` block —
+it fires only when parsing actually happens. The foreground
+snapshot invariant (see §7) is fully preserved: idle iterations
+(where `needParse` is false) never set `m_bgThreadCaughtUp` to
+`false`, so the foreground sees a stable view throughout.
 
 ______________________________________________________________________
 

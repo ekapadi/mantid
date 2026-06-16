@@ -293,6 +293,13 @@ void SNSLiveEventDataListener::run() {
       // latency low and lets m_stopThread be checked promptly.
       auto ready = pollSet.poll(Poco::Timespan(0, 100000));
 
+      // bufferParse() is only useful when bytes have just been appended or
+      // when the parse buffer is full and must be drained to make room.
+      // In all other cases (poll timeout, spurious POLL_READ, fragment-only
+      // carryover) the call would be a no-op and wastes both CPU and the
+      // bufferParseLog string allocation.
+      bool needParse = false;
+
       if (!ready.empty()) {
         auto it = ready.find(m_socket);
         if (it != ready.end()) {
@@ -310,7 +317,7 @@ void SNSLiveEventDataListener::run() {
                 bytesRead = m_socket.receiveBytes(bufFillAddr, bufFillLen);
               } catch (Poco::TimeoutException &) {
                 // Spurious POLL_READ (rare on epoll, not zero) — transient.
-                // Fall through to bufferParse(); next poll() will re-evaluate.
+                // Skip this iteration; next poll() will re-evaluate.
                 // Do NOT log here: the loop fires every ~100 ms and would flood.
                 bytesRead = -1;
               } catch (Poco::Net::NetException &e) {
@@ -322,8 +329,14 @@ void SNSLiveEventDataListener::run() {
               }
               if (bytesRead > 0) {
                 bufferBytesAppended(bytesRead);
+                needParse = true; // new bytes may complete one or more packets
               }
-              // bytesRead < 0: TimeoutException path — fall through to parse.
+              // bytesRead < 0 (TimeoutException): no new bytes; needParse stays false.
+            } else {
+              // Buffer is full; we cannot read more bytes until the parser
+              // drains some complete packets.  Signal parse so the loop
+              // makes forward progress instead of spinning on POLL_READ.
+              needParse = true;
             }
           }
 
@@ -333,25 +346,26 @@ void SNSLiveEventDataListener::run() {
           }
         }
       }
+      // If poll() timed out (!needParse, ready.empty()), the 100 ms block
+      // already yielded the CPU; go straight back to poll.
 
-      // Parse runs unconditionally every iteration so that a full parse buffer
-      // (bufferFillLength()==0) is drained even when the read was skipped.
-      // Close the foreground snapshot window for the duration of bufferParse()
-      // only — rxPacket() calls inside it may mutate m_pendingTransition and
-      // m_pauseNetRead under m_mutex, so the foreground must not snapshot
-      // between rxPacket() calls.
-      m_bgThreadCaughtUp.store(false, std::memory_order_release);
-      std::string bufferParseLog;
-      int packetsParsed = bufferParse(bufferParseLog);
-      bufferParseLog.clear(); // keep the string from growing without bound
-      // Reopen the snapshot window — all rxPacket() calls for this iteration
-      // have completed; m_pendingTransition and m_pauseNetRead are stable.
-      m_bgThreadCaughtUp.store(true, std::memory_order_release);
+      if (needParse) {
+        // Close the foreground snapshot window for the duration of bufferParse()
+        // only — rxPacket() calls inside it may mutate m_pendingTransition and
+        // m_pauseNetRead, so the foreground must not snapshot between calls.
+        m_bgThreadCaughtUp.store(false, std::memory_order_release);
+        std::string bufferParseLog;
+        int packetsParsed = bufferParse(bufferParseLog);
+        bufferParseLog.clear();
+        // Reopen the snapshot window — all rxPacket() calls for this iteration
+        // have completed; m_pendingTransition and m_pauseNetRead are stable.
+        m_bgThreadCaughtUp.store(true, std::memory_order_release);
 
-      if (packetsParsed == 0) {
-        // No packets were parsed.  Sleep a little to let some data accumulate
-        // before calling read again.  (Keeps us from spinlocking the cpu...)
-        Poco::Thread::sleep(10); // 10 milliseconds
+        if (packetsParsed == 0) {
+          // Bytes were appended but no packet was completed yet (partial packet
+          // in the buffer).  Sleep briefly so more bytes can accumulate.
+          Poco::Thread::sleep(10); // 10 milliseconds
+        }
       }
     }
 
