@@ -270,13 +270,13 @@ void SNSLiveEventDataListener::run() {
     Poco::Net::PollSet pollSet;
     pollSet.add(m_socket, Poco::Net::PollSet::POLL_READ);
 
-    // Set when bufferParse() was interrupted by an rxPacket callback returning
-    // true (e.g. rxPacket(RunStatusPkt) sets m_pauseNetRead and returns true).
-    // Those remaining bytes sit in the parser's internal buffer, not in the
-    // kernel's socket buffer, so poll() will not wake for them.  The flag
-    // causes the next iteration — after the pause loop releases — to run
-    // bufferParse() without waiting for new network bytes.
-    bool pendingParseBytes = false;
+    // bg-thread-local parse-pending flag (plain bool — only this thread touches
+    // it; no atomic needed).  Set whenever bufferParse() should run on the
+    // next iteration: fresh bytes were appended, the parse buffer is full and
+    // must be drained before more bytes can be read, or a prior parse was
+    // interrupted and bytes remain stranded in the parser's internal buffer
+    // where poll() cannot see them.
+    bool needParse = false;
 
     while (!m_stopThread.load(std::memory_order_acquire)) // loop until the foreground thread tells us to stop
     {
@@ -297,68 +297,71 @@ void SNSLiveEventDataListener::run() {
         break;
       }
 
-      // Wait up to 100 ms for socket readiness.  Short timeout keeps shutdown
-      // latency low and lets m_stopThread be checked promptly.
-      auto ready = pollSet.poll(Poco::Timespan(0, 100000));
+      // Skip poll() when needParse is already set — the pending bytes are in
+      // the parser's internal buffer, not the kernel's socket buffer, so
+      // poll() cannot see them.  Go straight to parse; the pause condition
+      // is re-checked at the top of the next iteration.
+      if (!needParse) {
+        // Wait up to 100 ms for socket readiness.  Short timeout keeps
+        // shutdown latency low and lets m_stopThread be checked promptly.
+        auto ready = pollSet.poll(Poco::Timespan(0, 100000));
 
-      // bufferParse() is only useful when bytes have just been appended, when
-      // the parse buffer is full and must be drained to make room, or when a
-      // prior parse was interrupted mid-buffer (pendingParseBytes).  In all
-      // other cases — poll timeout with no carryover, spurious POLL_READ —
-      // the call would be a no-op that wastes CPU and spams the log string.
-      bool needParse = pendingParseBytes;
-      pendingParseBytes = false;
+        // bufferParse() is only useful when bytes have just been appended or
+        // when the parse buffer is full and must be drained to make room.
+        // All other cases — poll timeout, spurious POLL_READ — are no-ops
+        // that would waste CPU and spam the log string.
+        if (!ready.empty()) {
+          auto it = ready.find(m_socket);
+          if (it != ready.end()) {
+            const int mode = it->second;
 
-      if (!ready.empty()) {
-        auto it = ready.find(m_socket);
-        if (it != ready.end()) {
-          const int mode = it->second;
+            // POLL_READ first: on Linux a peer close with pending bytes delivers
+            // EPOLLIN|EPOLLHUP together; drain the bytes before treating the
+            // hangup as fatal so we don't discard the final END_RUN packet.
+            if (mode & Poco::Net::PollSet::POLL_READ) {
+              unsigned int bufFillLen = bufferFillLength();
+              if (bufFillLen) {
+                uint8_t *bufFillAddr = bufferFillAddress();
+                int bytesRead = -1;
+                try {
+                  bytesRead = m_socket.receiveBytes(bufFillAddr, bufFillLen);
+                } catch (Poco::TimeoutException &) {
+                  // Spurious POLL_READ (rare on epoll, not zero) — transient.
+                  // Skip this iteration; next poll() will re-evaluate.
+                  // Do NOT log here: the loop fires every ~100 ms and would flood.
+                  bytesRead = -1;
+                } catch (Poco::Net::NetException &e) {
+                  fatal(std::string("SNSLiveEventDataListener: network read failed: ") + e.name());
+                }
 
-          // POLL_READ first: on Linux a peer close with pending bytes delivers
-          // EPOLLIN|EPOLLHUP together; drain the bytes before treating the
-          // hangup as fatal so we don't discard the final END_RUN packet.
-          if (mode & Poco::Net::PollSet::POLL_READ) {
-            unsigned int bufFillLen = bufferFillLength();
-            if (bufFillLen) {
-              uint8_t *bufFillAddr = bufferFillAddress();
-              int bytesRead = -1;
-              try {
-                bytesRead = m_socket.receiveBytes(bufFillAddr, bufFillLen);
-              } catch (Poco::TimeoutException &) {
-                // Spurious POLL_READ (rare on epoll, not zero) — transient.
-                // Skip this iteration; next poll() will re-evaluate.
-                // Do NOT log here: the loop fires every ~100 ms and would flood.
-                bytesRead = -1;
-              } catch (Poco::Net::NetException &e) {
-                fatal(std::string("SNSLiveEventDataListener: network read failed: ") + e.name());
+                if (bytesRead == 0) {
+                  fatal("SNSLiveEventDataListener: server disconnected while reading ADARA stream.");
+                }
+                if (bytesRead > 0) {
+                  bufferBytesAppended(bytesRead);
+                  needParse = true; // new bytes may complete one or more packets
+                }
+                // bytesRead < 0 (TimeoutException): no new bytes; needParse unchanged.
+              } else {
+                // Buffer is full; we cannot read more bytes until the parser
+                // drains some complete packets.  Signal parse so the loop
+                // makes forward progress instead of spinning on POLL_READ.
+                needParse = true;
               }
+            }
 
-              if (bytesRead == 0) {
-                fatal("SNSLiveEventDataListener: server disconnected while reading ADARA stream.");
-              }
-              if (bytesRead > 0) {
-                bufferBytesAppended(bytesRead);
-                needParse = true; // new bytes may complete one or more packets
-              }
-              // bytesRead < 0 (TimeoutException): no new bytes; needParse unchanged.
-            } else {
-              // Buffer is full; we cannot read more bytes until the parser
-              // drains some complete packets.  Signal parse so the loop
-              // makes forward progress instead of spinning on POLL_READ.
-              needParse = true;
+            if (mode & Poco::Net::PollSet::POLL_ERROR) {
+              // Only reached if the POLL_READ branch did not already call fatal().
+              fatal("SNSLiveEventDataListener: socket poll reported error.");
             }
           }
-
-          if (mode & Poco::Net::PollSet::POLL_ERROR) {
-            // Only reached if the POLL_READ branch did not already call fatal().
-            fatal("SNSLiveEventDataListener: socket poll reported error.");
-          }
         }
+        // If poll() timed out, needParse stays false — go straight back to poll.
+        // CPU already yielded for 100 ms; no additional sleep needed.
       }
-      // If poll() timed out with no carryover, go straight back to poll —
-      // no bytes to parse, CPU already yielded for 100 ms.
 
       if (needParse) {
+        needParse = false; // consume the signal; re-set below if interrupted
         // Close the foreground snapshot window for the duration of bufferParse()
         // only — rxPacket() calls inside it may mutate m_pendingTransition and
         // m_pauseNetRead, so the foreground must not snapshot between calls.
@@ -376,13 +379,10 @@ void SNSLiveEventDataListener::run() {
           // Remaining packets are in the parser's internal buffer; process
           // them after the pause loop releases — poll() won't wake for them
           // because they are not in the kernel's socket buffer.
-          pendingParseBytes = true;
-        } else if (packetsParsed == 0) {
-          // Bytes were appended but no packet was completed yet (partial
-          // packet at buffer boundary).  Sleep briefly so more bytes can
-          // accumulate before re-polling.
-          Poco::Thread::sleep(10); // 10 milliseconds
+          needParse = true;
         }
+        // packetsParsed == 0: fragment only; the next iteration calls poll()
+        // which already yields the CPU up to 100 ms — no sleep needed.
       }
     }
 
