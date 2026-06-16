@@ -270,6 +270,14 @@ void SNSLiveEventDataListener::run() {
     Poco::Net::PollSet pollSet;
     pollSet.add(m_socket, Poco::Net::PollSet::POLL_READ);
 
+    // Set when bufferParse() was interrupted by an rxPacket callback returning
+    // true (e.g. rxPacket(RunStatusPkt) sets m_pauseNetRead and returns true).
+    // Those remaining bytes sit in the parser's internal buffer, not in the
+    // kernel's socket buffer, so poll() will not wake for them.  The flag
+    // causes the next iteration — after the pause loop releases — to run
+    // bufferParse() without waiting for new network bytes.
+    bool pendingParseBytes = false;
+
     while (!m_stopThread.load(std::memory_order_acquire)) // loop until the foreground thread tells us to stop
     {
       // Gate: only honour m_pauseNetRead when no parse is in flight.
@@ -293,12 +301,13 @@ void SNSLiveEventDataListener::run() {
       // latency low and lets m_stopThread be checked promptly.
       auto ready = pollSet.poll(Poco::Timespan(0, 100000));
 
-      // bufferParse() is only useful when bytes have just been appended or
-      // when the parse buffer is full and must be drained to make room.
-      // In all other cases (poll timeout, spurious POLL_READ, fragment-only
-      // carryover) the call would be a no-op and wastes both CPU and the
-      // bufferParseLog string allocation.
-      bool needParse = false;
+      // bufferParse() is only useful when bytes have just been appended, when
+      // the parse buffer is full and must be drained to make room, or when a
+      // prior parse was interrupted mid-buffer (pendingParseBytes).  In all
+      // other cases — poll timeout with no carryover, spurious POLL_READ —
+      // the call would be a no-op that wastes CPU and spams the log string.
+      bool needParse = pendingParseBytes;
+      pendingParseBytes = false;
 
       if (!ready.empty()) {
         auto it = ready.find(m_socket);
@@ -331,7 +340,7 @@ void SNSLiveEventDataListener::run() {
                 bufferBytesAppended(bytesRead);
                 needParse = true; // new bytes may complete one or more packets
               }
-              // bytesRead < 0 (TimeoutException): no new bytes; needParse stays false.
+              // bytesRead < 0 (TimeoutException): no new bytes; needParse unchanged.
             } else {
               // Buffer is full; we cannot read more bytes until the parser
               // drains some complete packets.  Signal parse so the loop
@@ -346,8 +355,8 @@ void SNSLiveEventDataListener::run() {
           }
         }
       }
-      // If poll() timed out (!needParse, ready.empty()), the 100 ms block
-      // already yielded the CPU; go straight back to poll.
+      // If poll() timed out with no carryover, go straight back to poll —
+      // no bytes to parse, CPU already yielded for 100 ms.
 
       if (needParse) {
         // Close the foreground snapshot window for the duration of bufferParse()
@@ -361,9 +370,17 @@ void SNSLiveEventDataListener::run() {
         // have completed; m_pendingTransition and m_pauseNetRead are stable.
         m_bgThreadCaughtUp.store(true, std::memory_order_release);
 
-        if (packetsParsed == 0) {
-          // Bytes were appended but no packet was completed yet (partial packet
-          // in the buffer).  Sleep briefly so more bytes can accumulate.
+        if (packetsParsed < 0) {
+          // bufferParse() was interrupted by a callback returning true
+          // (rxPacket(RunStatusPkt) sets m_pauseNetRead and returns true).
+          // Remaining packets are in the parser's internal buffer; process
+          // them after the pause loop releases — poll() won't wake for them
+          // because they are not in the kernel's socket buffer.
+          pendingParseBytes = true;
+        } else if (packetsParsed == 0) {
+          // Bytes were appended but no packet was completed yet (partial
+          // packet at buffer boundary).  Sleep briefly so more bytes can
+          // accumulate before re-polling.
           Poco::Thread::sleep(10); // 10 milliseconds
         }
       }
