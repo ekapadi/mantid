@@ -1522,6 +1522,15 @@ std::optional<ILiveListener::RunStatus> SNSLiveEventDataListener::lastTransition
   return m_lastTransition;
 }
 
+std::unique_ptr<Kernel::Property> SNSLiveEventDataListener::getLogValue(const std::string &name) const {
+  std::lock_guard<std::mutex> scopedLock(m_mutex);
+  if (!m_eventBuffer || !m_eventBuffer->run().hasProperty(name))
+    return nullptr;
+  // Clone under the lock so the returned object is stable against concurrent
+  // rxPacket(VariableXxxPkt) calls that update the same property.
+  return std::unique_ptr<Kernel::Property>(m_eventBuffer->run().getProperty(name)->clone());
+}
+
 // ---------------------------------------------------------------------------
 // onBeforeExtract / onAfterExtract — extractData() commit points
 // ---------------------------------------------------------------------------

@@ -28,7 +28,7 @@ public:
 
   void copyPropertyValuesFrom(const LiveDataAlgorithm &other);
 
-  Mantid::API::ILiveListener_sptr getLiveListener(bool start = true);
+  Mantid::API::ILiveListener_sptr getLiveListener(bool start = true, bool createIfMissing = true);
   Mantid::API::ILiveListener_sptr createLiveListener(bool connect = false);
   void setLiveListener(Mantid::API::ILiveListener_sptr listener);
 

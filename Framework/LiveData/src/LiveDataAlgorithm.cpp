@@ -171,12 +171,20 @@ bool LiveDataAlgorithm::hasPostProcessing() const {
  * the properties on the algorithm. It then starts the listener
  * by calling the ILiveListener->start(StartTime) method if start is true.
  *
- * @param start Whether to start data acquisition right away
- * @return Shared pointer to interface of this algorithm's LiveListener.
+ * @param start Whether to start data acquisition right away (ignored when
+ *              returning an already-cached listener or when createIfMissing is false)
+ * @param createIfMissing When false, returns nullptr rather than creating a
+ *              new listener.  Use this for read-only state inspection so that
+ *              calling this method never establishes a DAS connection.
+ * @return Shared pointer to interface of this algorithm's LiveListener, or
+ *         nullptr if createIfMissing is false and no listener is cached.
  */
-ILiveListener_sptr LiveDataAlgorithm::getLiveListener(bool start) {
+ILiveListener_sptr LiveDataAlgorithm::getLiveListener(bool start, bool createIfMissing) {
   if (m_listener)
     return m_listener;
+
+  if (!createIfMissing)
+    return nullptr;
 
   // Create a new listener
   m_listener = createLiveListener(start);

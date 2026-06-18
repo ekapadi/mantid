@@ -12,8 +12,10 @@
 #include "MantidAPI/DllConfig.h"
 #include "MantidGeometry/IDTypes.h"
 #include "MantidKernel/DateAndTime.h"
+#include "MantidKernel/Property.h"
 #include "MantidKernel/PropertyManager.h"
 #include <Poco/Net/SocketAddress.h>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -156,6 +158,14 @@ public:
    *  Listeners that have no transition concept always return nullopt.
    */
   virtual std::optional<RunStatus> lastTransition() const { return std::nullopt; }
+
+  /** Current value of a named PV log buffered by this listener.
+   *  Returns a clone of the underlying Property (caller owns the returned
+   *  object), so the returned value is stable against concurrent background-
+   *  thread updates.  Returns nullptr if the log is not present or if this
+   *  listener does not buffer PV logs.  Implementations must be thread-safe.
+   */
+  virtual std::unique_ptr<Kernel::Property> getLogValue(const std::string &name) const { return nullptr; }
 
   /** Gets the current run status of the listened-to data stream.
    *  @return A value of the RunStatus enumeration indicating the present status

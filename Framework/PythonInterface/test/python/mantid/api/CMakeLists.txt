@@ -23,6 +23,7 @@ set(TEST_PY_FILES
     FunctionFactoryTest.py
     FunctionPropertyTest.py
     IEventWorkspaceTest.py
+    ILiveListenerTest.py
     IFunction1DTest.py
     IFunction1DValidatorTest.py
     IMaskWorkspaceTest.py

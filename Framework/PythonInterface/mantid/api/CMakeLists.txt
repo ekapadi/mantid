@@ -6,6 +6,7 @@ set(MODULE_TEMPLATE src/api.cpp.in)
 # order in which the export definitions occur and some depend on their base classes being exported first
 set(EXPORT_FILES
     src/Exports/IAlgorithm.cpp
+    src/Exports/ILiveListener.cpp
     src/Exports/AlgorithmObserver.cpp
     src/Exports/AlgorithmHistory.cpp
     src/Exports/AlgoTimeRegister.cpp
@@ -171,8 +172,13 @@ set_python_properties(PythonAPIModule _api)
 target_link_libraries(
   PythonAPIModule
   PUBLIC Mantid::API
-  PRIVATE Mantid::PythonInterfaceCore Mantid::PythonGeometryModule Mantid::PythonKernelModule Mantid::HistogramData
-          Mantid::Indexing Mantid::Types
+  PRIVATE Mantid::LiveData
+          Mantid::PythonInterfaceCore
+          Mantid::PythonGeometryModule
+          Mantid::PythonKernelModule
+          Mantid::HistogramData
+          Mantid::Indexing
+          Mantid::Types
 )
 
 # Installation settings

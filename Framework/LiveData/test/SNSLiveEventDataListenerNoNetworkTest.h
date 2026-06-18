@@ -8,6 +8,7 @@
 
 #include "ADARAPacketBuilders.h"
 #include "MantidAPI/LiveListenerFactory.h"
+#include "MantidKernel/TimeSeriesProperty.h"
 #include "MantidLiveData/SNSLiveEventDataListener.h"
 #include <algorithm>
 #include <cxxtest/TestSuite.h>
@@ -582,5 +583,107 @@ public:
       TS_ASSERT_THROWS_NOTHING(listener.callOnBeginRun());
       TS_ASSERT(listener.readRequiredLogs().empty());
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Sub-spec: getLogValue
+  // -------------------------------------------------------------------------
+
+  /** A freshly constructed listener has no PV logs registered yet.
+   *  getLogValue must return nullptr for any name.
+   */
+  void test_getLogValue_returns_nullptr_for_unregistered_log() {
+    TestableSNSListener listener;
+    auto prop = listener.getLogValue("nonexistent_pv");
+    TS_ASSERT(!prop);
+  }
+
+  /** After feeding a DeviceDescriptorPkt that registers a double PV, followed
+   *  by a VariableDoublePkt that sets its value, getLogValue must return a
+   *  Property clone whose lastValue() matches the packet value.
+   */
+  void test_getLogValue_returns_clone_after_variable_packet() {
+    using namespace Mantid::LiveData::Testing;
+    using Mantid::Kernel::TimeSeriesProperty;
+
+    TestableSNSListener listener;
+
+    const uint32_t devId = 7;
+    const uint32_t pvId = 3;
+    const double kValue = 60.23;
+
+    // Register the PV via a device descriptor.
+    const std::string xml = "<device><process_variables>"
+                            "<process_variable>"
+                            "<pv_name>test_frequency</pv_name>"
+                            "<pv_id>3</pv_id>"
+                            "<pv_type>double</pv_type>"
+                            "</process_variable>"
+                            "</process_variables></device>";
+    auto devPkt = buildDeviceDescriptorPkt(devId, xml);
+    TS_ASSERT_THROWS_NOTHING(listener.callBufferParse(devPkt));
+
+    // At this point the property exists in the Run but has no values yet.
+    {
+      auto prop = listener.getLogValue("test_frequency");
+      TS_ASSERT(prop); // property registered, just empty
+    }
+
+    // Add a value via a variable double packet.
+    auto varPkt = buildVariableDoublePkt(devId, pvId, kValue, /*pulseId=*/0x0000000100000000ULL);
+    TS_ASSERT_THROWS_NOTHING(listener.callBufferParse(varPkt));
+
+    auto prop = listener.getLogValue("test_frequency");
+    TS_ASSERT(prop);
+    auto *tsp = dynamic_cast<TimeSeriesProperty<double> *>(prop.get());
+    TS_ASSERT(tsp);
+    TS_ASSERT_EQUALS(1, tsp->realSize());
+    TS_ASSERT_DELTA(kValue, tsp->lastValue(), 1e-10);
+  }
+
+  /** The Property returned by getLogValue is a clone: subsequent updates to
+   *  the live log must not change the value already returned.
+   */
+  void test_getLogValue_clone_is_independent_of_subsequent_updates() {
+    using namespace Mantid::LiveData::Testing;
+    using Mantid::Kernel::TimeSeriesProperty;
+
+    TestableSNSListener listener;
+
+    const uint32_t devId = 5;
+    const uint32_t pvId = 1;
+
+    const std::string xml = "<device><process_variables>"
+                            "<process_variable>"
+                            "<pv_name>probe_pv</pv_name>"
+                            "<pv_id>1</pv_id>"
+                            "<pv_type>double</pv_type>"
+                            "</process_variable>"
+                            "</process_variables></device>";
+    TS_ASSERT_THROWS_NOTHING(listener.callBufferParse(buildDeviceDescriptorPkt(devId, xml)));
+
+    // First value: 10.0
+    TS_ASSERT_THROWS_NOTHING(
+        listener.callBufferParse(buildVariableDoublePkt(devId, pvId, 10.0, /*pulseId=*/0x0000000100000000ULL)));
+
+    auto clone = listener.getLogValue("probe_pv");
+    TS_ASSERT(clone);
+    auto *tsp = dynamic_cast<TimeSeriesProperty<double> *>(clone.get());
+    TS_ASSERT(tsp);
+    TS_ASSERT_DELTA(10.0, tsp->lastValue(), 1e-10);
+
+    // Feed a second value: 99.9
+    TS_ASSERT_THROWS_NOTHING(
+        listener.callBufferParse(buildVariableDoublePkt(devId, pvId, 99.9, /*pulseId=*/0x0000000200000000ULL)));
+
+    // The clone must still reflect the old value (10.0), not the new one (99.9).
+    TS_ASSERT_DELTA(10.0, tsp->lastValue(), 1e-10);
+
+    // A fresh call to getLogValue reflects the updated state.
+    auto fresh = listener.getLogValue("probe_pv");
+    TS_ASSERT(fresh);
+    auto *tsp2 = dynamic_cast<TimeSeriesProperty<double> *>(fresh.get());
+    TS_ASSERT(tsp2);
+    TS_ASSERT_DELTA(99.9, tsp2->lastValue(), 1e-10);
   }
 };

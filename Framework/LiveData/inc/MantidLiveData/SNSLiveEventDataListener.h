@@ -46,6 +46,7 @@ public:
   bool isPaused() const override;
   API::ListenerState listenerState() const override;
   std::optional<RunStatus> lastTransition() const override;
+  std::unique_ptr<Kernel::Property> getLogValue(const std::string &name) const override;
 
   int runNumber() const override { return m_runNumber; };
 
