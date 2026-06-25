@@ -231,14 +231,18 @@ protected:
   // ---------------------------------------------------------------------------
   // Fields in protected: so that test subclasses can inject state without
   // requiring friend declarations (which cannot name a class defined in a test
-  // header).  All fields here are guarded by m_mutex unless otherwise noted.
+  // header).
+  //
+  // Atomic (lock-free, no mutex needed):
+  //   m_isConnected, m_pauseNetRead, m_bgThreadCaughtUp, m_stopThread.
+  //
+  // Mutex-guarded (always access under m_mutex):
+  //   m_backgroundException, m_eventBuffer, m_adaraRunStatus,
+  //   m_pendingTransition, m_lastTransition, m_isDasPaused, m_instrumentXML,
+  //   m_instrumentName, m_nameMap, m_requiredLogs, m_deferredRunDetailsPkt,
+  //   m_workspaceInitialized, m_previousExtractCompleted.
   // ---------------------------------------------------------------------------
-  /// Protects m_eventBuffer, m_adaraRunStatus, m_pendingTransition,
-  /// m_lastTransition, m_isDasPaused, m_instrumentXML, m_instrumentName,
-  /// m_nameMap, m_requiredLogs, m_deferredRunDetailsPkt, and m_workspaceInitialized.
-  /// Does NOT protect m_pauseNetRead, m_stopThread, or m_bgThreadCaughtUp —
-  /// those are std::atomic<bool> and are accessed lock-free.
-  bool m_isConnected{false};
+  std::atomic<bool> m_isConnected{false};
 
   mutable std::mutex m_mutex;
   /// Back-pressure flag set true by rxPacket(RunStatusPkt) on NEW_RUN/END_RUN

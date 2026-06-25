@@ -292,10 +292,6 @@ public:
   //   BankedEvent (run B, pixel 1).
   //   END_RUN 10002 — triggers rename to "ts2_monitor_10002".
   //
-  //   No PktDisconnect: the connection stays open until tearDown destroys the
-  //   server.  This avoids a race where the listener detects EOF before
-  //   MonitorLiveData can commit EndRun 10002 and create "ts2_monitor_10002".
-  //
   // No PktWaitForExtract gates are needed: the single-slot m_pendingTransition
   // queue plus m_pauseNetRead serialise the two EndRun edges across separate
   // MonitorLiveData iterations without any test-side gating.
@@ -322,8 +318,7 @@ public:
         Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, kRunB, kPulseB),
         Testing::buildBankedEventPkt(kPulseB, /*chargePc=*/500.0, {{/*tof=*/300u, /*pixel=*/1u}}),
         Testing::buildRunStatusPkt(ADARA::RunStatus::END_RUN, kRunB, kPulseB2),
-        // No PktDisconnect: tearDown destroys the server, avoiding the race where
-        // the listener detects EOF before MonitorLiveData commits EndRun 10002.
+        Testing::PktDisconnect{},
     });
     m_server->start();
 
@@ -416,8 +411,7 @@ public:
         Testing::buildBeamlineInfoPkt(kAIInstrumentName),
         Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, kRunB, kPulseB),
         Testing::buildBankedEventPkt(kPulseB, /*chargePc=*/500.0, {{/*tof=*/200u, /*pixel=*/1u}}),
-        // No PktDisconnect: tearDown destroys the server, avoiding the race where
-        // the listener detects EOF before MonitorLiveData commits BeginRun B.
+        Testing::PktDisconnect{},
     });
     m_server->start();
 

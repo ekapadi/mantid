@@ -175,7 +175,7 @@ bool SNSLiveEventDataListener::connect(const Poco::Net::SocketAddress &address)
 
   m_socket.setReceiveTimeout(Poco::Timespan(RECV_TIMEOUT, 0)); // POCO timespan is seconds, microseconds
   g_log.debug() << "Connected to " << m_socket.address().toString() << '\n';
-  m_isConnected = true;
+  m_isConnected.store(true);
 
   return true;
 }
@@ -184,7 +184,7 @@ bool SNSLiveEventDataListener::connect(const Poco::Net::SocketAddress &address)
 
 /// Test to see if the object has connected to the SMS daemon
 /// @return Returns true if connected.  False otherwise.
-bool SNSLiveEventDataListener::isConnected() { return m_isConnected; }
+bool SNSLiveEventDataListener::isConnected() { return m_isConnected.load(); }
 
 /// Start the background thread
 
@@ -231,19 +231,27 @@ int SNSLiveEventDataListener::sendHelloPacket(const void *buf, int size) {
 /// network, parses it and stores the resulting events (and other metadata) in
 /// a temporary workspace.
 void SNSLiveEventDataListener::run() {
-  // Fatal-socket-failure helper.  Sets m_isConnected=false, stores the message
-  // in m_backgroundException (first-writer-wins), then throws std::runtime_error
-  // so the existing outer catch cascade lands the thread cleanly.
-  auto fatal = [this](const std::string &msg) {
-    g_log.fatal() << msg << '\n';
-    m_isConnected = false;
+  // Centralised side-effect helper: sets m_isConnected=false and writes
+  // m_backgroundException (first-writer-wins) under m_mutex.  Called from
+  // fatal() and from every outer catch arm so the locking + first-writer-wins
+  // idiom lives in one place.
+  auto setFatalState = [this](std::shared_ptr<std::runtime_error> ex) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_isConnected.store(false);
     if (!m_backgroundException)
-      m_backgroundException = std::make_shared<std::runtime_error>(msg);
+      m_backgroundException = std::move(ex);
+  };
+
+  // Fatal-socket-failure helper.  Logs, sets fatal state, then throws
+  // std::runtime_error so the outer catch cascade lands the thread cleanly.
+  auto fatal = [this, &setFatalState](const std::string &msg) {
+    g_log.fatal() << msg << '\n';
+    setFatalState(std::make_shared<std::runtime_error>(msg));
     throw std::runtime_error(msg);
   };
 
   try {
-    if (!m_isConnected) // sanity check
+    if (!m_isConnected.load()) // sanity check
     {
       throw std::runtime_error("SNSLiveEventDataListener: No connection to SMS server.");
     }
@@ -335,7 +343,14 @@ void SNSLiveEventDataListener::run() {
                 }
 
                 if (bytesRead == 0) {
-                  fatal("SNSLiveEventDataListener: server disconnected while reading ADARA stream.");
+                  // Clean peer-close.  Not an error — set Disconnected state
+                  // and exit the bg thread cleanly.  doExtractData() will
+                  // surface this to consumers via its disconnect checks.
+                  // Set m_bgThreadCaughtUp so onBeforeExtract() can proceed
+                  // past its NotYet gate even if we exit before bufferParse().
+                  m_isConnected.store(false);
+                  m_bgThreadCaughtUp.store(true, std::memory_order_release);
+                  return;
                 }
                 if (bytesRead > 0) {
                   bufferBytesAppended(bytesRead);
@@ -368,7 +383,6 @@ void SNSLiveEventDataListener::run() {
         m_bgThreadCaughtUp.store(false, std::memory_order_release);
         std::string bufferParseLog;
         int packetsParsed = bufferParse(bufferParseLog);
-        bufferParseLog.clear();
         // Reopen the snapshot window — all rxPacket() calls for this iteration
         // have completed; m_pendingTransition and m_pauseNetRead are stable.
         m_bgThreadCaughtUp.store(true, std::memory_order_release);
@@ -402,47 +416,35 @@ void SNSLiveEventDataListener::run() {
                      "SNSLiveEventDataListener network read thread.\n"
                   << "Exception message is: " << e.what() << ".\n"
                   << "Thread is exiting.\n";
-
-    m_isConnected = false;
-
-    if (!m_backgroundException)
-      m_backgroundException = std::make_shared<ADARA::invalid_packet>(e);
+    setFatalState(std::make_shared<ADARA::invalid_packet>(e));
   } catch (std::runtime_error &e) { // exception handler for generic runtime
                                     // exceptions
     g_log.fatal() << "Caught a runtime exception.\n"
                   << "Exception message: " << e.what() << ".\n"
                   << "Thread will exit.\n";
-    m_isConnected = false;
-
-    if (!m_backgroundException)
-      m_backgroundException = std::make_shared<std::runtime_error>(e);
+    setFatalState(std::make_shared<std::runtime_error>(e));
   } catch (std::invalid_argument &e) { // TimeSeriesProperty (and possibly some
                                        // other things) can throw these errors
     g_log.fatal() << "Caught an invalid argument exception.\n"
                   << "Exception message: " << e.what() << ".\n"
                   << "Thread will exit.\n";
-    m_isConnected = false;
-    m_workspaceInitialized = true; // see the comments in the default exception
-                                   // handler for why we set this value.
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      m_workspaceInitialized = true; // see the comments in the default exception
+                                     // handler for why we set this value.
+    }
     std::string newMsg("Invalid argument exception thrown from the background thread: ");
     newMsg += e.what();
-    if (!m_backgroundException)
-      m_backgroundException = std::make_shared<std::runtime_error>(newMsg);
+    setFatalState(std::make_shared<std::runtime_error>(newMsg));
   } catch (std::exception &e) { // exception handler for generic exceptions
     g_log.fatal() << "Caught an exception.\n"
                   << "Exception message: " << e.what() << ".\n"
                   << "Thread will exit.\n";
-    m_isConnected = false;
-
-    if (!m_backgroundException)
-      m_backgroundException = std::make_shared<std::runtime_error>(e.what());
+    setFatalState(std::make_shared<std::runtime_error>(e.what()));
   } catch (...) { // Default exception handler
     g_log.fatal("Uncaught exception in SNSLiveEventDataListener network read thread."
                 " Thread is exiting.");
-    m_isConnected = false;
-
-    if (!m_backgroundException)
-      m_backgroundException = std::make_shared<std::runtime_error>("Unknown error in backgound thread");
+    setFatalState(std::make_shared<std::runtime_error>("Unknown error in backgound thread"));
   }
 }
 
@@ -1379,12 +1381,14 @@ void SNSLiveEventDataListener::initWorkspacePart2() {
   try {
     loadInst->execute();
   } catch (std::exception &e) {
+    // Re-throw with context: InstrumentName + XML length make the failure
+    // diagnosable.  Do NOT acquire m_mutex here — rxPacket(RunStatusPkt)
+    // holds it when it calls us, and a second acquisition would deadlock.
+    // The outer catch arms in run() call setFatalState() with this message.
     std::ostringstream msg;
     msg << "SNSLiveEventDataListener: LoadInstrument failed during workspace "
            "initialization (InstrumentName='"
         << m_instrumentName << "', InstrumentXML length=" << m_instrumentXML.size() << " bytes): " << e.what();
-    if (!m_backgroundException)
-      m_backgroundException = std::make_shared<std::runtime_error>(msg.str());
     throw std::runtime_error(msg.str());
   }
 
@@ -1505,20 +1509,33 @@ std::shared_ptr<Workspace> SNSLiveEventDataListener::doExtractData() {
     startupTimeout = std::max(0.001, *v);
 
   const DateAndTime endTime = DateAndTime::getCurrentTime() + startupTimeout;
-  while ((!m_workspaceInitialized) && (DateAndTime::getCurrentTime() < endTime)) {
-    // Surface any fatal exception from the background thread (e.g. a bad
-    // instrument geometry packet that caused LoadInstrument to throw) so
-    // the caller sees the real cause instead of waiting out the timeout.
-    if (m_backgroundException) {
-      throw std::runtime_error(m_backgroundException->what());
+  while (true) {
+    bool initialized;
+    std::shared_ptr<std::runtime_error> bgEx;
+    {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      initialized = m_workspaceInitialized;
+      bgEx = m_backgroundException;
     }
+    if (initialized)
+      break;
+    // Surface any fatal exception (e.g. LoadInstrument failure) so the
+    // caller sees the real cause instead of waiting out the timeout.
+    if (bgEx)
+      throw std::runtime_error(bgEx->what());
+    // Check 1: clean peer-close before workspace was ever initialised.
+    if (!m_isConnected.load())
+      throw std::runtime_error("SNSLiveEventDataListener: stream ended before workspace initialization.");
+    if (DateAndTime::getCurrentTime() >= endTime)
+      break;
     Poco::Thread::sleep(100); // 100 milliseconds
   }
-  if (m_backgroundException) {
-    throw std::runtime_error(m_backgroundException->what());
-  }
-  if (!m_workspaceInitialized) {
-    throw Exception::NotYet("The workspace has not yet been initialized.");
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_backgroundException)
+      throw std::runtime_error(m_backgroundException->what());
+    if (!m_workspaceInitialized)
+      throw Exception::NotYet("The workspace has not yet been initialized.");
   }
 
   // Throw if the request was for data from the start of a run, but we're not
@@ -1555,9 +1572,15 @@ std::shared_ptr<Workspace> SNSLiveEventDataListener::doExtractData() {
     temp->setMonitorWorkspace(newMonitorBuffer);
   }
 
-  // Lock the mutex and swap the workspaces
+  // Check 2: if the bg thread exited cleanly (clean disconnect) and there is
+  // nothing left to deliver — no events and no pending run-state transition —
+  // throw so consumers don't spin on empty workspaces indefinitely.
   {
     std::lock_guard<std::mutex> scopedLock(m_mutex);
+    if (!m_isConnected.load() && !m_pendingTransition && m_eventBuffer->getNumberEvents() == 0) {
+      throw std::runtime_error("SNSLiveEventDataListener: stream ended after server disconnect.");
+    }
+    // Lock the mutex and swap the workspaces
     std::swap(m_eventBuffer, temp);
   } // mutex automatically unlocks here
 
@@ -1569,9 +1592,9 @@ std::shared_ptr<Workspace> SNSLiveEventDataListener::doExtractData() {
 // ---------------------------------------------------------------------------
 
 ILiveListener::RunStatus SNSLiveEventDataListener::runState() const {
+  std::lock_guard<std::mutex> scopedLock(m_mutex);
   if (m_backgroundException)
     throw(*m_backgroundException);
-  std::lock_guard<std::mutex> scopedLock(m_mutex);
   return m_adaraRunStatus;
 }
 
@@ -1584,7 +1607,7 @@ API::ListenerState SNSLiveEventDataListener::listenerState() const {
   std::lock_guard<std::mutex> scopedLock(m_mutex);
   if (m_backgroundException)
     return API::ListenerState::Error;
-  if (!m_isConnected)
+  if (!m_isConnected.load())
     return API::ListenerState::Disconnected;
   if (m_pauseNetRead.load(std::memory_order_acquire))
     return API::ListenerState::ReadWait;
@@ -1592,9 +1615,9 @@ API::ListenerState SNSLiveEventDataListener::listenerState() const {
 }
 
 std::optional<ILiveListener::RunStatus> SNSLiveEventDataListener::lastTransition() const {
+  std::lock_guard<std::mutex> scopedLock(m_mutex);
   if (m_backgroundException)
     throw(*m_backgroundException);
-  std::lock_guard<std::mutex> scopedLock(m_mutex);
   return m_lastTransition;
 }
 

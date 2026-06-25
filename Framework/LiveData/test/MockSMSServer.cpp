@@ -191,12 +191,13 @@ struct MockSMSServer::Impl {
           return;
 
         } else if (std::holds_alternative<PktAbruptClose>(entry)) {
-          // Close the underlying fd without draining the kernel send buffer.
-          // On Linux this makes the peer's poll() wake with EPOLLHUP, which
-          // Poco's PollSet reports as POLL_ERROR.
-          int fd = m_clientSocket.impl()->sockfd();
-          if (fd >= 0)
-            ::close(fd);
+          // On UDS, close() delivers recv()==0 to the peer regardless of
+          // SO_LINGER / fd tricks.  Use Poco's close so Poco owns the fd
+          // lifetime and there is no double-close when the socket is destroyed.
+          try {
+            m_clientSocket.close();
+          } catch (...) {
+          }
           std::lock_guard<std::mutex> lock(m_mutex);
           m_scriptIndex = i + 1;
           return;
