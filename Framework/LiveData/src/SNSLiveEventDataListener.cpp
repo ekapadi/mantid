@@ -323,9 +323,14 @@ void SNSLiveEventDataListener::run() {
           if (it != ready.end()) {
             const int mode = it->second;
 
-            // POLL_READ first: on Linux a peer close with pending bytes delivers
-            // EPOLLIN|EPOLLHUP together; drain the bytes before treating the
-            // hangup as fatal so we don't discard the final END_RUN packet.
+            // POLL_READ first: on Linux a peer close with pending bytes
+            // delivers EPOLLIN|EPOLLHUP together; drain bytes before treating
+            // the hangup as fatal so the final END_RUN packet is not discarded.
+            // On macOS kqueue, EV_ERROR (kevent changelist failure) can
+            // co-occur with EVFILT_READ (valid pending data) after a
+            // back-pressure pause; successfulRead below suppresses the
+            // POLL_ERROR fatal in that case.
+            bool successfulRead = false;
             if (mode & Poco::Net::PollSet::POLL_READ) {
               unsigned int bufFillLen = bufferFillLength();
               if (bufFillLen) {
@@ -355,6 +360,7 @@ void SNSLiveEventDataListener::run() {
                 if (bytesRead > 0) {
                   bufferBytesAppended(bytesRead);
                   needParse = true; // new bytes may complete one or more packets
+                  successfulRead = true;
                 }
                 // bytesRead < 0 (TimeoutException): no new bytes; needParse unchanged.
               } else {
@@ -362,11 +368,17 @@ void SNSLiveEventDataListener::run() {
                 // drains some complete packets.  Signal parse so the loop
                 // makes forward progress instead of spinning on POLL_READ.
                 needParse = true;
+                successfulRead = true; // event handled; defer POLL_ERROR check
+                                       // to the next iteration after buffer drains
               }
             }
 
-            if (mode & Poco::Net::PollSet::POLL_ERROR) {
-              // Only reached if the POLL_READ branch did not already call fatal().
+            if ((mode & Poco::Net::PollSet::POLL_ERROR) && !successfulRead) {
+              // Only fatal when POLL_READ did not successfully handle the event.
+              // When POLL_READ already read bytes (successfulRead=true), any
+              // concurrent POLL_ERROR is a transient kqueue artefact — the next
+              // poll() iteration will clear it or fire a pure POLL_ERROR if the
+              // socket is genuinely broken.
               fatal("SNSLiveEventDataListener: socket poll reported error.");
             }
           }
