@@ -496,7 +496,7 @@ bool SNSLiveEventDataListener::rxPacket(const ADARA::BankedEventPkt &pkt) {
   // First, check to see if the run has been paused.  We don't process
   // the events if we're paused unless the user has specifically overridden
   // this behavior with the livelistener.keeppausedevents property.
-  if (m_isDasPaused && (!m_keepPausedEvents)) {
+  if (m_isDasPaused.load() && (!m_keepPausedEvents)) {
     return false;
   }
 
@@ -1598,10 +1598,7 @@ ILiveListener::RunStatus SNSLiveEventDataListener::runState() const {
   return m_adaraRunStatus;
 }
 
-bool SNSLiveEventDataListener::isPaused() const {
-  std::lock_guard<std::mutex> scopedLock(m_mutex);
-  return m_isDasPaused;
-}
+bool SNSLiveEventDataListener::isPaused() const { return m_isDasPaused.load(); }
 
 API::ListenerState SNSLiveEventDataListener::listenerState() const {
   std::lock_guard<std::mutex> scopedLock(m_mutex);
@@ -1778,7 +1775,7 @@ void SNSLiveEventDataListener::onRunPause(bool paused) {
   // while the DAS is paused.  m_isDasPaused is read by isPaused() and by
   // rxPacket(BankedEventPkt) to gate event appending.
   // Called from rxPacket(AnnotationPkt) which already holds m_mutex.
-  m_isDasPaused = paused;
+  m_isDasPaused.store(paused);
 }
 
 // Called by the rxPacket() functions to determine if the packet should be processed

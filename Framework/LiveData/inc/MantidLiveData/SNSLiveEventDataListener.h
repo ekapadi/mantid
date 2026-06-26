@@ -234,11 +234,12 @@ protected:
   // header).
   //
   // Atomic (lock-free, no mutex needed):
-  //   m_isConnected, m_pauseNetRead, m_bgThreadCaughtUp, m_stopThread.
+  //   m_isConnected, m_pauseNetRead, m_bgThreadCaughtUp, m_stopThread,
+  //   m_isDasPaused.
   //
   // Mutex-guarded (always access under m_mutex):
   //   m_backgroundException, m_eventBuffer, m_adaraRunStatus,
-  //   m_pendingTransition, m_lastTransition, m_isDasPaused, m_instrumentXML,
+  //   m_pendingTransition, m_lastTransition, m_instrumentXML,
   //   m_instrumentName, m_nameMap, m_requiredLogs, m_deferredRunDetailsPkt,
   //   m_workspaceInitialized, m_previousExtractCompleted.
   // ---------------------------------------------------------------------------
@@ -302,9 +303,10 @@ protected:
 
   // These 2 determine whether or not we filter out events that arrive when
   // the run is paused.
-  bool m_isDasPaused{false}; // Set to true or false when we receive a
-                             // pause/resume marker in an annotation packet. (See
-                             // rxPacket( const ADARA::AnnotationPkt &pkt))
+  /// Pause state is orthogonal to run state: m_adaraRunStatus remains Running
+  /// while the DAS is paused.  Written under m_mutex (rxPacket(AnnotationPkt));
+  /// read lock-free by isPaused() and rxPacket(BankedEventPkt).
+  std::atomic<bool> m_isDasPaused{false};
 
   // Holds on to any exceptions that were thrown in the background thread so
   // that we can re-throw them in the foreground thread
