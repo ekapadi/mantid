@@ -244,7 +244,7 @@ void SNSLiveEventDataListener::run() {
 
   // Fatal-socket-failure helper.  Logs, sets fatal state, then throws
   // std::runtime_error so the outer catch cascade lands the thread cleanly.
-  auto fatal = [this, &setFatalState](const std::string &msg) {
+  auto fatal = [&setFatalState](const std::string &msg) {
     g_log.fatal() << msg << '\n';
     setFatalState(std::make_shared<std::runtime_error>(msg));
     throw std::runtime_error(msg);
