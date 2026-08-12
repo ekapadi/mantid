@@ -1460,9 +1460,12 @@ void SNSLiveEventDataListener::initWorkspacePart2() {
   // non-empty, and m_runNumber is already set on both the joining path
   // (rxPacket(NEW_RUN) -> setRunDetails()) and the transition path
   // (onBeginRun() -> setRunDetails(), which runs before initWorkspacePart2()
-  // is reached again for that run).  Applied to the extracted workspace's
-  // title in doExtractData().
+  // is reached again for that run).  Applied directly to m_eventBuffer here,
+  // same as the geometry / Y-unit / monitor-workspace setup above: every
+  // subsequent initializeFromParent() copy in doExtractData() propagates
+  // this title forward, so no per-extraction handling is needed there.
   m_wsName = m_instrumentName + std::to_string(m_runNumber.load());
+  m_eventBuffer->setTitle(m_wsName);
 
   m_workspaceInitialized = true;
 
@@ -1606,11 +1609,8 @@ std::shared_ptr<Workspace> SNSLiveEventDataListener::doExtractData() {
     temp = std::dynamic_pointer_cast<EventWorkspace>(
         API::WorkspaceFactory::Instance().create("EventWorkspace", m_eventBuffer->getNumberHistograms(), 2, 1));
 
-    // Copy geometry over.
+    // Copy geometry and title over.
     API::WorkspaceFactory::Instance().initializeFromParent(*m_eventBuffer, *temp, false);
-
-    // Apply the title composed in initWorkspacePart2() (instrument name + run number).
-    temp->setTitle(m_wsName);
 
     // Clear out the old logs, except for the most recent entry
     temp->mutableRun().clearOutdatedTimeSeriesLogValues();

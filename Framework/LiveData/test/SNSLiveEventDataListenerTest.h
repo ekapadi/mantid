@@ -446,6 +446,42 @@ public:
     }
   }
 
+  void test_workspaceTitle_setOnFirstExtraction() {
+    // Regression test: doExtractData() used to set the workspace title
+    // (Workspace::setTitle(), distinct from the "run_title" LOG PROPERTY
+    // checked above) on `temp` BEFORE std::swap(m_eventBuffer, temp), so
+    // the title landed on the object retained as the next internal buffer,
+    // never on what's actually returned.  It is now set directly on
+    // m_eventBuffer in initWorkspacePart2() -- the same place geometry,
+    // Y-unit, and the monitor workspace are already set -- so it must be
+    // correct starting with the FIRST extraction of the run, which is the
+    // case this test targets. (Every later extraction within the same run
+    // was already correct even before the fix, since m_wsName does not
+    // change mid-run -- exactly why the bug went unnoticed.)
+    const int runNumber = 42;
+    m_server->script({
+        Testing::buildGeometryPkt(kMinimalIDF()),
+        Testing::buildBeamlineInfoPkt(kInstrumentName),
+        Testing::buildRunStatusPkt(ADARA::RunStatus::NEW_RUN, runNumber, 0x0000000100000000ULL),
+        Testing::buildBankedEventPkt(0x0000000100000000ULL,
+                                     /*chargePc=*/1000.0, {{/*tof=*/100u, /*pixel=*/1u}}),
+        Testing::PktWaitForExtract{}, // gate (index 4 → scriptIndex 5)
+        Testing::PktDisconnect{},
+    });
+    m_server->start();
+    TS_ASSERT(connectListener());
+    waitFor([&] { return m_server->scriptIndex() >= 5; }, std::chrono::seconds{5});
+    waitFor([&] { return m_listener->runState() == API::ILiveListener::JoiningRun; }, std::chrono::seconds{5});
+    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    // This is the FIRST extraction of the run -- the case that was broken.
+    auto ws = extractWithTimeout(*m_listener, std::chrono::seconds{10});
+    m_server->releaseExtractGate();
+    TS_ASSERT_DIFFERS(ws, nullptr);
+    if (ws) {
+      TS_ASSERT_EQUALS(ws->getTitle(), std::string(kInstrumentName) + std::to_string(runNumber));
+    }
+  }
+
   // ----- (additional test_* methods added in subspec05 / 06) -----
 
   /// Regression: a malformed instrument geometry XML must surface a
