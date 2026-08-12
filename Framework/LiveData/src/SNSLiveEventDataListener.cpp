@@ -485,6 +485,8 @@ void SNSLiveEventDataListener::run() {
     g_log.fatal() << "Caught a runtime exception.\n"
                   << "Exception message: " << e.what() << ".\n"
                   << "Thread will exit.\n";
+    // No-op when this exception came from the fatal() helper,
+    //  which already called setFatalState() before throwing
     setFatalState(std::make_shared<std::runtime_error>(e));
   } catch (std::invalid_argument &e) { // TimeSeriesProperty (and possibly some
                                        // other things) can throw these errors
@@ -507,7 +509,7 @@ void SNSLiveEventDataListener::run() {
   } catch (...) { // Default exception handler
     g_log.fatal("Uncaught exception in SNSLiveEventDataListener network read thread."
                 " Thread is exiting.");
-    setFatalState(std::make_shared<std::runtime_error>("Unknown error in backgound thread"));
+    setFatalState(std::make_shared<std::runtime_error>("Unknown error in background thread"));
   }
 }
 
